@@ -297,7 +297,7 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
 
 /// Test builds: the part notes a real meeting would have written while it was going (every full
 /// 10-minute stretch except the last), so the end-of-meeting wait can be measured on its own.
-#[cfg(feature = "test-hooks")]
+#[allow(dead_code)] // used by test builds only
 pub fn simulate_live(core: &Core, segs: &[Segment]) -> LiveNotes {
     let end = segs.iter().map(|s| s.end.max(s.start)).fold(0.0f32, f32::max);
     let (mut parts, mut from) = (Vec::new(), 0.0f32);
