@@ -45,7 +45,7 @@ The installer is written to `<target-dir>/release/bundle/nsis/`. For development
 
 ## Privacy
 
-- Audio, transcripts, notes and settings never leave your PC. The only network traffic is the one-time model download.
+- Audio, transcripts, notes and settings never leave your PC. The only network traffic is the one-time model download and a check on GitHub for new versions every few hours.
 - Call detection reads Windows' own "which app is using the microphone" list; Seda records only after you press Start (or if you choose "Record automatically" in Settings).
 - Meeting audio is transcribed as you talk and never saved: only the transcript and notes stay (you can turn on "Keep meeting recordings" in Settings).
 - Delete any dictation or meeting from the app; any saved audio is deleted with it, and the text is overwritten in the database.
@@ -54,6 +54,7 @@ The installer is written to `<target-dir>/release/bundle/nsis/`. For development
 
 - **The writing AI is locked down.** It listens only on this PC, on a random port, with a password that is new on every launch and known only to Seda. Its status endpoints and browser access are off, so websites can't reach it, and Seda checks that the process answering is the one it started.
 - **Downloads are verified.** Every model and the AI engine are pinned to an exact version and checked against their published SHA-256 fingerprints; anything that doesn't match is deleted and refused.
+- **Signed updates.** Seda updates itself from this repository's releases, and only installs an update whose digital signature matches Seda's key; a tampered or fake update is refused.
 - **No admin rights, no open ports to the network, no telemetry.**
 - **The app's windows are sandboxed** with a strict Content Security Policy, and commands that type into your apps or use the microphone only work from the window they belong to. Model and engine paths are accepted only from Seda's own models folder.
 - **Dictated text stays out of Windows clipboard history and cloud clipboard**, is pasted only into the window you started dictating in (never as multiple lines into a terminal), and is never written to the log.

@@ -34,6 +34,26 @@ function CallApps({ settings, update }: { settings: S; update: Update }) {
   );
 }
 
+/** Current version, and a manual "Check for updates" (Seda also checks by itself every few hours). */
+function VersionRow() {
+  const [version, setVersion] = useState("");
+  const [state, setState] = useState("");
+  useEffect(() => { api.appVersion().then(setVersion).catch(() => {}); }, []);
+  const check = async () => {
+    setState("Checking…");
+    try {
+      const u = await api.updateCheck();
+      setState(u ? `Version ${u.version} is available — use the Update button in the sidebar.` : "You have the latest version.");
+    } catch (e) { setState(`Couldn't check: ${e}`); }
+  };
+  return (
+    <Row title="Version" help={state || "Seda checks for updates by itself every few hours. Updates are signed and verified before installing."}>
+      <span className="mono">{version}</span>
+      <button className="btn small" onClick={check}>Check for updates</button>
+    </Row>
+  );
+}
+
 /** Saved when you leave the field (not on every key). */
 export function NameField({ settings, update, autoFocus }: { settings: S; update: Update; autoFocus?: boolean }) {
   const [v, setV] = useState(settings.user_name);
@@ -125,6 +145,7 @@ export default function Settings({ settings, update, status, go }: { settings: S
         <ShortcutPicker which="fix" settings={settings} update={update} />
       </Row>
       <ToggleRow title="Sounds" on={settings.sounds} onChange={(v) => update("sounds", v)} />
+      <VersionRow />
       <ToggleRow title="Start with Windows" help="Opens quietly in the tray so your shortcut always works." on={settings.autostart} onChange={(v) => update("autostart", v)} />
 
       <button className="advanced-toggle" onClick={() => setAdvanced(!advanced)} aria-expanded={advanced}>

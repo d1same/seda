@@ -44,6 +44,7 @@ export type Settings = {
 };
 
 export type CallApp = { id: string; name: string; installed: boolean };
+export type UpdateInfo = { version: string; notes: string };
 
 export type Status = { asr: string; asr_error: string | null; llm: string; llm_error: string | null };
 
@@ -74,6 +75,10 @@ export const api = {
   updateSetting: (key: string, value: unknown) => invoke<Settings>("update_setting", { key, value }),
   setHotkeysPaused: (paused: boolean) => invoke<void>("set_hotkeys_paused", { paused }),
   localHotkey: (event: "down" | "up" | "cancel") => invoke<void>("local_hotkey", { event }),
+  appVersion: () => invoke<string>("app_version"),
+  updateStatus: () => invoke<UpdateInfo | null>("update_status"),
+  updateCheck: () => invoke<UpdateInfo | null>("update_check"),
+  updateInstall: () => invoke<void>("update_install"),
   getStatus: () => invoke<Status>("get_status"),
   reloadModels: () => invoke<void>("reload_models"),
   history: (limit = 200) => invoke<HistoryItem[]>("history", { limit }),

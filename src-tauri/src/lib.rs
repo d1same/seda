@@ -8,6 +8,7 @@ mod settings;
 mod store;
 mod log;
 mod setup;
+mod update;
 mod win;
 
 use hotkey::HotkeyEvent;
@@ -724,6 +725,29 @@ fn local_hotkey(window: tauri::WebviewWindow, event: String) -> Result<(), Strin
 /// Commands that act on your screen or microphone may only come from the window they belong to.
 fn only(window: &tauri::WebviewWindow, label: &str) -> Result<(), String> {
     if window.label() == label { Ok(()) } else { Err(format!("not allowed from the {} window", window.label())) }
+}
+
+// ---------- updates ----------
+
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+fn update_status() -> Option<update::UpdateInfo> {
+    update::available()
+}
+
+#[tauri::command(async)]
+async fn update_check(app: AppHandle) -> Result<Option<update::UpdateInfo>, String> {
+    update::check(&app).await
+}
+
+#[tauri::command(async)]
+async fn update_install(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "main")?;
+    update::install(&app).await
 }
 
 #[tauri::command]
@@ -1505,6 +1529,7 @@ fn tauri_main() {
     log::scrub_old_logs();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .invoke_handler(tauri::generate_handler![
             get_settings, update_setting, set_hotkeys_paused, get_status, reload_models, history, correct_history,
@@ -1513,7 +1538,8 @@ fn tauri_main() {
             mic_test_start, mic_test_stop, list_mics, open_mic_privacy, test_pill, finish_onboarding, diagnostics, open_log,
             meeting_start, meeting_stop, meeting_status, meetings_list, meeting_get, meeting_delete, meeting_renotes,
             meeting_set_my_notes, meeting_save_notes, meeting_ask, meeting_clear_chat,
-            call_start, call_dismiss, call_hide, call_open, call_apps, local_hotkey
+            call_start, call_dismiss, call_hide, call_open, call_apps, local_hotkey,
+            app_version, update_status, update_check, update_install
         ])
         .setup(|app| {
             let mut settings = Settings::load();
@@ -1556,6 +1582,7 @@ fn tauri_main() {
                 let c = core.clone();
                 std::thread::spawn(move || watch_calls(c));
             }
+            update::spawn_checker(app.handle().clone());
 
             core.load_asr();
             core.load_llm();

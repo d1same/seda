@@ -57,6 +57,9 @@ export function mockInvoke(cmd: string, args: any): any {
     case "meeting_status": return { running: meetingOn, secs: (Date.now() - meetingStarted) / 1000, segments: meetingOn ? meetingSegs : [], my_notes: "" };
     case "meeting_ask": return [...JSON.parse(meetings[0].chat), { role: "you", text: args.question }, { role: "ai", text: "Mock answer: Sam sends the proposal by Friday." }];
     case "call_apps": return [{ id: "teams", name: "Microsoft Teams", installed: true }, { id: "zoom", name: "Zoom", installed: true }, { id: "browser", name: "Google Meet & browser calls", installed: true }, { id: "webex", name: "Webex", installed: false }, { id: "slack", name: "Slack huddles", installed: false }, { id: "discord", name: "Discord", installed: true }, { id: "whatsapp", name: "WhatsApp", installed: false }];
+    case "app_version": return "0.1.3";
+    case "update_status": case "update_check": return { version: "0.1.4", notes: "Fixes and improvements." };
+    case "update_install": return;
     case "call_start": case "call_dismiss": case "call_hide": case "call_open": return;
     case "meeting_set_my_notes": case "meeting_save_notes": case "meeting_clear_chat": return;
     case "meetings_list": return meetings.map((m) => ({ ...m, transcript: "", notes: "" }));

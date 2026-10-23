@@ -12,6 +12,7 @@ import HistoryDetail from "./sections/HistoryDetail";
 import Onboarding from "./Onboarding";
 import Logo from "./Logo";
 import Icon from "./Icons";
+import UpdateBanner from "./UpdateBanner";
 import "./main.css";
 
 const SECTIONS = [
@@ -74,6 +75,7 @@ export default function Main() {
             </button>
           ))}
         </nav>
+        <UpdateBanner />
         <div className="rail-foot">
           <button className="status-line" onClick={() => setSection(lamp === "err" ? "settings" : "home")} title={status.asr_error ?? status.llm_error ?? lampText}>
             <span className={`lamp ${lamp}`} />
