@@ -4,6 +4,7 @@ import { on } from "../../lib/events";
 import Icon, { IconButton } from "../Icons";
 import { Head } from "./ui";
 import { dayOf } from "./HistoryRow";
+import { SelectBar, Tick, useSelection } from "./Select";
 import "./meetings.css";
 
 const clock = (s: number) => {
@@ -23,11 +24,14 @@ function Notes({ md }: { md: string }) {
       {md.split("\n").map((raw, i) => {
         const l = raw.trim();
         if (!l) return null;
+        // Sub-points are indented by 2+ spaces (or a tab) under their bullet.
+        const depth = Math.min(2, Math.floor((raw.match(/^[ \t]*/)?.[0].replace(/\t/g, "  ").length ?? 0) / 2));
+        const style = depth ? { marginInlineStart: depth * 20 } : undefined;
         if (l.startsWith("#")) return <h3 key={i} dir="auto">{l.replace(/^#+\s*/, "")}</h3>;
         const task = l.match(/^[-*]\s*\[( |x)\]\s*(.*)$/i);
-        if (task) return <div key={i} className="task" dir="auto"><span className={`box ${task[1] !== " " ? "on" : ""}`} />{inline(task[2])}</div>;
-        if (/^[-*]\s/.test(l)) return <div key={i} className="bullet" dir="auto">{inline(l.slice(2))}</div>;
-        return <p key={i} dir="auto">{inline(l)}</p>;
+        if (task) return <div key={i} className="task" style={style} dir="auto"><span className={`box ${task[1] !== " " ? "on" : ""}`} />{inline(task[2])}</div>;
+        if (/^[-*]\s/.test(l)) return <div key={i} className={`bullet ${depth ? "sub" : ""}`} style={style} dir="auto">{inline(l.slice(2))}</div>;
+        return <p key={i} style={style} dir="auto">{inline(l)}</p>;
       })}
     </div>
   );
@@ -221,6 +225,7 @@ export default function Meetings({ me }: { me: string }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
+  const sel = useSelection();
 
   const loadList = useCallback(() => { api.meetingsList().then(setList); }, []);
   useEffect(() => {
@@ -266,7 +271,12 @@ export default function Meetings({ me }: { me: string }) {
 
   return (
     <>
-      <Head n="Meetings" title="Meetings" right={<button className="btn primary" onClick={start}>Start meeting</button>}>
+      <Head n="Meetings" title="Meetings" right={
+        <div className="head-actions">
+          {list.length > 0 && <SelectBar sel={sel} all={shown.map((m) => m.id)} what="meeting" onDelete={async (ids) => { for (const id of ids) await api.meetingDelete(id); loadList(); }} />}
+          {!sel.on && <button className="btn primary" onClick={start}>Start meeting</button>}
+        </div>
+      }>
         Seda records you and the call, transcribes as it goes, and writes the notes when it ends.
       </Head>
       {err && <div className="notice err">{err}</div>}
@@ -275,7 +285,8 @@ export default function Meetings({ me }: { me: string }) {
         <div key={day}>
           <div className="label day-label">{day}</div>
           {ms.map((m) => (
-            <button key={m.id} className="mrow" onClick={() => setOpenId(m.id)}>
+            <button key={m.id} className={`mrow ${sel.on && sel.has(m.id) ? "picked" : ""}`} onClick={() => (sel.on ? sel.toggle(m.id) : setOpenId(m.id))}>
+              {sel.on && <Tick on={sel.has(m.id)} />}
               <span className="ttl" dir="auto">{m.title || "Writing notes…"}</span>
               <span className="faint">{hhmm(m.ts)} · {mins(m.secs)}</span>
             </button>

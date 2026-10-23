@@ -28,6 +28,27 @@ pub struct Meeting {
     pub my_notes: Mutex<String>,
     running: Arc<AtomicBool>,
     worker: std::thread::JoinHandle<()>,
+    live: LiveNotes,
+}
+
+/// Notes for long meetings are written in ~10-minute stretches while the meeting is still going,
+/// so when it ends only the last stretch and a final merge are left.
+pub const WINDOW_SECS: f32 = 600.0;
+/// Up to this much transcript (about 20 minutes of talk) the notes are written in one pass.
+const SINGLE_PASS_CHARS: usize = 14_000;
+
+pub struct LiveNotes {
+    parts: Arc<Mutex<Vec<String>>>,
+    /// Meeting time (seconds) up to which part notes exist.
+    done_until: Arc<Mutex<f32>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// The transcript lines of one stretch of the meeting, without echoes, in time order.
+fn window(segs: &[Segment], from: f32, to: f32) -> Vec<Segment> {
+    let mut w: Vec<Segment> = segs.iter().filter(|s| s.start >= from && s.start < to && (s.who != "You" || !is_echo(s, segs))).cloned().collect();
+    w.sort_by(|a, b| a.start.total_cmp(&b.start));
+    w
 }
 
 /// Longest piece transcribed at once when nobody pauses (Whisper works on up to 30 s).
@@ -87,6 +108,8 @@ impl Track {
                 let text = core.asr.read().as_ref().map(|a| a.transcribe(&chunk, language, vocab));
                 if let Some(Ok(text)) = text {
                     if !text.trim().is_empty() {
+                        // Corrections you taught Seda while dictating apply here too.
+                        let text = core.store.apply_fixes(&text);
                         out.push(Segment { who: self.who.to_string(), start, end: self.pending_start, text });
                     }
                 }
@@ -152,6 +175,7 @@ impl Meeting {
         let segments = Arc::new(Mutex::new(Vec::<Segment>::new()));
         let running = Arc::new(AtomicBool::new(true));
         let (segs, run) = (segments.clone(), running.clone());
+        let core_notes = core.clone();
         log::log(format!("meeting started ({} tracks)", tracks.len()));
         let worker = std::thread::spawn(move || {
             let (language, vocab) = (core.settings.read().language.clone(), core.vocab());
@@ -185,19 +209,106 @@ impl Meeting {
                 t.finish();
             }
         });
-        Ok(Self { started: Instant::now(), ts: stamp.to_rfc3339(), segments, my_notes: Mutex::new(String::new()), running, worker })
+        let started = Instant::now();
+        let (parts, done_until) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(0.0f32)));
+        let handle = {
+            let (segs, run, parts, until) = (segments.clone(), running.clone(), parts.clone(), done_until.clone());
+            std::thread::spawn(move || {
+                while run.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_secs(10));
+                    let from = *until.lock();
+                    // A minute of slack so the stretch's last sentences are transcribed first.
+                    if started.elapsed().as_secs_f32() < from + WINDOW_SECS + 60.0 || !run.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    let chunk = window(&segs.lock(), from, from + WINDOW_SECS);
+                    if !chunk.is_empty() {
+                        let t = Instant::now();
+                        let user = core_notes.settings.read().user_name.clone();
+                        let note = core_notes.llm.lock().as_mut().map(|l| l.meeting_part(&transcript_text(&chunk), main_language(&chunk), &user));
+                        match note {
+                            Some(Ok(n)) => {
+                                log::log(format!("meeting notes: part {} written during the meeting in {:.0}s", parts.lock().len() + 1, t.elapsed().as_secs_f32()));
+                                parts.lock().push(n);
+                            }
+                            Some(Err(e)) => {
+                                log::log(format!("meeting notes: part failed ({e}); will redo it at the end"));
+                                continue;
+                            }
+                            None => continue,
+                        }
+                    }
+                    *until.lock() = from + WINDOW_SECS;
+                }
+            })
+        };
+        let live = LiveNotes { parts, done_until, handle: Some(handle) };
+        Ok(Self { started, ts: stamp.to_rfc3339(), segments, my_notes: Mutex::new(String::new()), running, worker, live })
     }
 
-    /// Stops recording and returns the full transcript, in time order.
-    pub fn stop(self) -> Vec<Segment> {
+    /// Stops recording; returns the full transcript in time order, and the notes written so far.
+    pub fn stop(self) -> (Vec<Segment>, LiveNotes) {
         self.running.store(false, Ordering::SeqCst);
         let _ = self.worker.join();
         let segs = self.segments.lock().clone();
         // Live, a "You" line can arrive before the "Them" line it echoes: check again with everything.
         let mut kept: Vec<Segment> = segs.iter().filter(|s| s.who != "You" || !is_echo(s, &segs)).cloned().collect();
         kept.sort_by(|a, b| a.start.total_cmp(&b.start));
-        kept
+        (kept, self.live)
     }
+}
+
+/// The finished notes: short meetings in one pass; long ones from the part notes written during the
+/// meeting (live) plus notes for whatever is left, merged. Without live (Rewrite) every part is
+/// written now.
+pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_notes: &str) -> anyhow::Result<String> {
+    let (mut parts, from) = match live {
+        Some(mut l) => {
+            if let Some(h) = l.handle.take() {
+                let _ = h.join(); // a part may still be in progress
+            }
+            let p = l.parts.lock().clone();
+            (p, *l.done_until.lock())
+        }
+        None => (Vec::new(), 0.0),
+    };
+    let user = core.settings.read().user_name.clone();
+    let language = main_language(segs);
+    let end = segs.iter().map(|s| s.end.max(s.start)).fold(0.0f32, f32::max);
+    let minutes = (end / 60.0).round() as u32;
+    let mut guard = core.llm.lock();
+    let llm = guard.as_mut().ok_or_else(|| anyhow::anyhow!("the writing AI isn't running"))?;
+    let full = transcript_text(segs);
+    if parts.is_empty() && full.chars().count() <= SINGLE_PASS_CHARS {
+        return llm.meeting_single(&full, language, my_notes, &user, minutes);
+    }
+    let mut a = from;
+    while a <= end {
+        let chunk = window(segs, a, a + WINDOW_SECS);
+        if !chunk.is_empty() {
+            log::log(format!("meeting notes: part {}", parts.len() + 1));
+            parts.push(llm.meeting_part(&transcript_text(&chunk), language, &user)?);
+        }
+        a += WINDOW_SECS;
+    }
+    log::log(format!("meeting notes: merging {} parts", parts.len()));
+    llm.meeting_merge(&parts, language, my_notes, &user, minutes)
+}
+
+/// Test builds: the part notes a real meeting would have written while it was going (every full
+/// 10-minute stretch except the last), so the end-of-meeting wait can be measured on its own.
+#[cfg(feature = "test-hooks")]
+pub fn simulate_live(core: &Core, segs: &[Segment]) -> LiveNotes {
+    let end = segs.iter().map(|s| s.end.max(s.start)).fold(0.0f32, f32::max);
+    let (mut parts, mut from) = (Vec::new(), 0.0f32);
+    while from + WINDOW_SECS + 60.0 <= end {
+        let chunk = window(segs, from, from + WINDOW_SECS);
+        if let Some(Ok(n)) = core.llm.lock().as_mut().map(|l| l.meeting_part(&transcript_text(&chunk), main_language(&chunk), "")) {
+            parts.push(n);
+        }
+        from += WINDOW_SECS;
+    }
+    LiveNotes { parts: Arc::new(Mutex::new(parts)), done_until: Arc::new(Mutex::new(from)), handle: None }
 }
 
 /// "[03:12] Them: …" lines, the form the AI gets.

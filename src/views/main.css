@@ -181,3 +181,12 @@
 .update-text { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-3); line-height: 1.45; }
 .update-text b { font-size: 13px; color: var(--ink); font-weight: 600; }
 .update-banner .ibtn { justify-content: center; }
+.head-actions { display: flex; align-items: center; gap: 8px; }
+.select-bar { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; white-space: nowrap; justify-content: flex-end; }
+.tick-box { width: 16px; height: 16px; flex: none; border: 1.5px solid var(--ink-3); border-radius: 4px; display: grid; place-items: center; color: var(--brand-ink); }
+.tick-box.on { background: var(--brand); border-color: var(--brand); }
+.mrow .tick-box { margin-inline-end: 4px; }
+.mrow.picked, .hrow.picked { background: var(--paper-2); }
+.mrow { justify-content: flex-start; }
+.mrow .faint { margin-inline-start: auto; }
+.hrow-line.picking { grid-template-columns: 24px 66px 80px 1fr auto; }

@@ -77,3 +77,5 @@
 .live-peek .them b { color: var(--amber); }
 .live-full { flex: 1; max-height: 300px; overflow-y: auto; }
 .live-dock .link { flex: none; font-size: 12.5px; }
+.notes .bullet.sub { color: var(--ink-2); font-size: 14px; }
+.notes .bullet.sub::before { background: transparent; border: 1px solid var(--ink-3); }

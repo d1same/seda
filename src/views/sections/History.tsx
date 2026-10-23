@@ -3,10 +3,12 @@ import { api, type HistoryItem } from "../../lib/api";
 import { useOnHistory } from "../../lib/hooks";
 import HistoryRow, { dayOf } from "./HistoryRow";
 import { Head } from "./ui";
+import { SelectBar, useSelection } from "./Select";
 
 export default function History({ open }: { open: (item: HistoryItem) => void }) {
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [q, setQ] = useState("");
+  const sel = useSelection();
   const load = useCallback(() => { api.history(500).then(setItems); }, []);
   useOnHistory(load);
   const needle = q.trim().toLowerCase();
@@ -22,13 +24,18 @@ export default function History({ open }: { open: (item: HistoryItem) => void })
 
   return (
     <>
-      <Head n="History" title="History" right={<input className="field" style={{ width: 220 }} dir="auto" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />}>
+      <Head n="History" title="History" right={
+        <div className="head-actions">
+          {!sel.on && <input className="field" style={{ width: 200 }} dir="auto" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />}
+          {items.length > 0 && <SelectBar sel={sel} all={shown.map((i) => i.id)} what="dictation" onDelete={async (ids) => { for (const id of ids) await api.deleteHistory(id); load(); }} />}
+        </div>
+      }>
         Everything you dictated. Open one to read all of it, copy it, or correct it so Seda learns.
       </Head>
       {days.map(([day, list]) => (
         <div key={day}>
           <div className="label day-label">{day}</div>
-          {list.map((i) => <HistoryRow key={i.id} item={i} open={open} />)}
+          {list.map((i) => <HistoryRow key={i.id} item={i} open={open} sel={sel} />)}
         </div>
       ))}
       {shown.length === 0 && <div className="empty"><div className="big">{q ? "No matches." : "No dictations yet."}</div></div>}

@@ -1075,12 +1075,12 @@ fn stop_meeting(core: &Arc<Core>) -> Option<i64> {
     }
     let (secs, ts, mine) = (m.started.elapsed().as_secs_f64(), m.ts.clone(), m.my_notes.lock().clone());
     let _ = core.app.emit("meeting-state", false);
-    let segs = m.stop();
+    let (segs, live) = m.stop();
     let id = core.store.add_meeting(&ts, secs, &serde_json::to_string(&segs).unwrap_or_default(), &mine);
     log::log(format!("meeting saved: {:.0} min, {} lines", secs / 60.0, segs.len()));
     let _ = core.app.emit("meetings-changed", ());
     let c = core.clone();
-    std::thread::spawn(move || write_meeting_notes(&c, id));
+    std::thread::spawn(move || write_meeting_notes(&c, id, Some(live)));
     Some(id)
 }
 
@@ -1213,7 +1213,8 @@ fn call_apps() -> Vec<detect::AppInfo> {
     detect::apps()
 }
 
-fn write_meeting_notes(core: &Core, id: i64) {
+/// live: the part notes written during the meeting (None when rewriting later).
+fn write_meeting_notes(core: &Core, id: i64, live: Option<meeting::LiveNotes>) {
     let Some(m) = core.store.meeting(id) else { return };
     let segs: Vec<meeting::Segment> = serde_json::from_str(&m.transcript).unwrap_or_default();
     if segs.is_empty() && m.my_notes.trim().is_empty() {
@@ -1222,10 +1223,7 @@ fn write_meeting_notes(core: &Core, id: i64) {
         return;
     }
     let t = Instant::now();
-    let notes = match core.llm.lock().as_mut() {
-        Some(llm) => llm.meeting_notes(&meeting::transcript_text(&segs), meeting::main_language(&segs), &m.my_notes, &core.settings.read().user_name.clone()),
-        None => Err(anyhow::anyhow!("the writing AI isn't running")),
-    };
+    let notes = meeting::write_notes(core, &segs, live, &m.my_notes);
     let (title, notes) = match notes {
         Ok(n) => {
             let title = n.lines().find_map(|l| l.strip_prefix("# ")).unwrap_or("Meeting").trim().to_string();
@@ -1376,7 +1374,7 @@ fn meeting_renotes(core: CoreState, id: i64) {
     core.store.set_meeting_notes(id, "", "");
     let _ = core.app.emit("meetings-changed", ());
     let c = core.inner().clone();
-    std::thread::spawn(move || write_meeting_notes(&c, id));
+    std::thread::spawn(move || write_meeting_notes(&c, id, None));
 }
 
 #[tauri::command]
@@ -1623,6 +1621,25 @@ fn tauri_main() {
                             s if s.starts_with("call-on:") => *detect::TEST_ACTIVE.lock() = Some(s[8..].to_string()),
                             "call-start" => log::log(format!("test call start: {:?}", call_start_now(&c))),
                             "show" => show_main(&c.app),
+                            s if s.starts_with("livenotes:") => {
+                                // As if during a meeting: earlier stretches done first, then time only what's left at the end.
+                                let path = s[10..].to_string();
+                                let segs: Vec<meeting::Segment> = std::fs::read_to_string(&path).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+                                let live = meeting::simulate_live(&c, &segs);
+                                let t = Instant::now();
+                                let text = match meeting::write_notes(&c, &segs, Some(live), "") { Ok(n) => n, Err(e) => format!("ERROR {e}") };
+                                let _ = std::fs::write(format!("{path}.live.md"), &text);
+                                log::log(format!("test livenotes: end-of-meeting wait {:.1}s", t.elapsed().as_secs_f32()));
+                            }
+                            s if s.starts_with("notes:") => {
+                                // Run a saved transcript (segments JSON) through the meeting-notes pipeline; output beside it.
+                                let path = s[6..].to_string();
+                                let segs: Vec<meeting::Segment> = std::fs::read_to_string(&path).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+                                let t = Instant::now();
+                                let text = match meeting::write_notes(&c, &segs, None, "") { Ok(n) => n, Err(e) => format!("ERROR {e}") };
+                                let _ = std::fs::write(format!("{path}.notes.md"), &text);
+                                log::log(format!("test notes: {} lines in {:.1}s", segs.len(), t.elapsed().as_secs_f32()));
+                            }
                             s if s.starts_with("eval:") => {
                                 // Run script in the main window (e.g. focus a field, copy its value into the title).
                                 if let Some(w) = c.app.get_webview_window("main") {

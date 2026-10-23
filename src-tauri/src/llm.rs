@@ -93,31 +93,51 @@ pub fn rewrite_prompt(mode: &str) -> &'static str {
     }
 }
 
-const MEETING: &str = "You write meeting notes from a transcript. Each line starts with [mm:ss] and the speaker: \"You\" is the user, \"Them\" is everyone else on the call. The transcript comes from speech recognition, so some words are wrong: infer the meaning, never quote obvious mistakes.
-Write the notes in the language most of the meeting was in. Output Markdown only, in this order:
-# <a short title, 3-7 words>
-## Summary
-3-6 bullets: what was discussed and concluded.
+/// Shared rules for all meeting notes (single pass, parts and merge): Granola-style notes, organised
+/// by topic, specific, and with only real follow-up work as tasks.
+const NOTE_RULES: &str = "Rules:
+- Organise by topic: one ## section per subject that was discussed, named after it (e.g. \"## Zoom audio setup\"), in the order it came up. Never use generic headings like \"Summary\" or \"Discussion\".
+- Be specific and concrete: what exactly happened, what was tried and what worked, error messages, settings, versions, names, numbers and dates. Never write vague lines like \"participants discussed issues\".
+- Put supporting details as indented sub-bullets (two spaces, then \"- \") under their point.
+- Next steps are only follow-up work for AFTER the meeting. Every commitment counts, whoever made it: \"I'll …\", \"I can …\", \"we'll …\" and requests like \"Sam, can you …\" are all next steps (owner = the person who will do it). Never list things said during the call (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
+- Skip greetings and small talk. Never invent anything that was not said.
+- \"You\" in the transcript is the user; \"Them\" is the other people. The transcript comes from speech recognition, so some words are wrong: infer the meaning, never quote obvious mistakes.";
+
+const MEETING: &str = "You are an excellent note-taker. Turn this meeting transcript (lines start with [mm:ss] and the speaker) into clear notes. Output Markdown only:
+# <a specific title naming what the meeting was about, 4-9 words>
+## <topic>
+- <specific point>
+  - <supporting detail>
+(one ## section per topic, up to {N} topics)
 ## Decisions
-Bullets.
-## Action items
-- [ ] <who>: <task> (<deadline if one was said>)  (when nobody was named, write just the task)
+- <decision>   (only if decisions were made)
+## Next steps
+- [ ] <who>: <follow-up task> (<when, if said>)   (only real follow-ups)
 ## Open questions
-Bullets.
-Leave out any section that would be empty (except Summary). Never invent names, numbers, dates or tasks that were not said.";
+- <question left unanswered>   (only if any)
+List EVERY decision, follow-up task and open question that was mentioned; missing one is worse than including a minor one.
+{RULES}";
 
-const MEETING_PART: &str = "You take notes on one part of a longer meeting transcript. Lines start with [mm:ss] and the speaker (\"You\" is the user, \"Them\" is everyone else). Write short Markdown bullets of everything that matters: topics, conclusions, decisions, tasks with owners and deadlines, open questions. Same language as the transcript. Never invent anything.";
-
-const MEETING_MERGE: &str = "You get notes from consecutive parts of one meeting. Merge them into final meeting notes. Output Markdown only, in this order:
-# <a short title, 3-7 words>
-## Summary
-3-6 bullets.
+const MEETING_PART: &str = "You take detailed notes on one part (about 10 minutes) of a longer meeting (lines start with [mm:ss] and the speaker). Output Markdown only, in THIS order (lists first, so nothing important is cut off):
 ## Decisions
-## Action items
-- [ ] <who>: <task> (<deadline if one was said>)
+- <decision>
+## Next steps
+- [ ] <who>: <follow-up task> (<when>)
 ## Open questions
-Leave out empty sections (except Summary). Remove duplicates. Keep the notes' language. Never invent anything.";
-
+- <question>
+## <topic>
+- <specific point>
+  - <supporting detail>
+(one ## section per topic discussed in this part)
+Leave out empty sections. Capture EVERY decision, follow-up task and open question in this part.
+{RULES}";
+const MEETING_MERGE: &str = "You get the notes of consecutive parts of one meeting, in order. Combine their topic sections into the final notes. Output Markdown only:
+# <a specific title naming what the meeting was about, 4-9 words>
+## <topic>
+- <specific point>
+  - <supporting detail>
+Merge sections about the same subject from different parts into ONE section, keeping all their specific details. At most {N} topic sections: fold small related points together. Write ONLY the title and topic sections: do NOT write Decisions, Next steps or Open questions sections (they are added separately).
+{RULES}";
 /// The model sometimes writes "## Open questions" followed by just "None". Remove such sections.
 pub fn drop_empty_sections(md: &str) -> String {
     let empty = |l: &str| {
@@ -321,40 +341,93 @@ impl Llm {
         self.chat_messages(messages, 1800, Duration::from_secs(300))
     }
 
-    /// Meeting notes in Markdown. Long meetings are summarised part by part first (each part fits
-    /// the engine's context comfortably), then the part notes are merged. `language`: when set
-    /// (e.g. "Persian"), the notes are written in it. `my_notes`: what the user typed during the meeting.
-    pub fn meeting_notes(&mut self, transcript: &str, language: Option<&str>, my_notes: &str, user: &str) -> Result<String> {
-        let mut lang = language.map(|l| format!("\n\nWrite the notes in {l}. Keep names and technical terms as they were said.")).unwrap_or_default();
-        lang.push_str(&who_is_you(user));
+    /// Shared instructions for meeting notes: language, who "You" is, the user's own notes.
+    fn meeting_extra(language: Option<&str>, user: &str, has_mine: bool) -> String {
+        let mut s = language.map(|l| format!("\n\nWrite the notes in {l}. Keep names and technical terms as they were said.")).unwrap_or_default();
+        s.push_str(&who_is_you(user));
+        if has_mine {
+            s.push_str("\n\nThe user also typed their own notes during the meeting (given first). Build on them: keep every point they wrote, in their words, and add the details from the meeting.");
+        }
+        s
+    }
+
+    /// How many topic sections fit the meeting: about one per 5 minutes, 3 to 10.
+    fn summary_bullets(minutes: u32) -> String {
+        (minutes / 5).clamp(3, 10).to_string()
+    }
+
+    /// Notes for a short meeting in one pass.
+    pub fn meeting_single(&mut self, transcript: &str, language: Option<&str>, my_notes: &str, user: &str, minutes: u32) -> Result<String> {
         let mine = my_notes.trim();
-        if !mine.is_empty() {
-            lang.push_str("\n\nThe user also typed their own notes during the meeting (given before the transcript). Build on them: keep every point they wrote, in their words, and add the details from the transcript.");
-        }
-        let with_mine = |body: &str| if mine.is_empty() { body.to_string() } else { format!("My own notes:\n{mine}\n\n---\n\n{body}") };
-        let (single, part, merge) = (format!("{MEETING}{lang}"), format!("{MEETING_PART}{lang}"), format!("{MEETING_MERGE}{lang}"));
-        const PART: usize = 12_000; // characters, roughly 4k tokens
-        let timeout = Duration::from_secs(600);
-        if transcript.chars().count() <= PART {
-            return Ok(drop_empty_sections(&self.chat_with(&single, &with_mine(transcript), 1500, timeout)?));
-        }
-        let mut parts = Vec::new();
-        let mut cur = String::new();
-        for line in transcript.lines() {
-            if cur.chars().count() + line.chars().count() > PART && !cur.is_empty() {
-                parts.push(std::mem::take(&mut cur));
+        let system = format!("{}{}", MEETING.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, !mine.is_empty()));
+        let body = if mine.is_empty() { transcript.to_string() } else { format!("My own notes:\n{mine}\n\n---\n\n{transcript}") };
+        Ok(drop_empty_sections(&self.chat_with(&system, &body, 1800, Duration::from_secs(600))?))
+    }
+
+    /// Detailed notes for one ~10-minute stretch of a long meeting (written while it is still going).
+    pub fn meeting_part(&mut self, transcript: &str, language: Option<&str>, user: &str) -> Result<String> {
+        let system = format!("{}{}", MEETING_PART.replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, false));
+        self.chat_with(&system, transcript, 1200, Duration::from_secs(600))
+    }
+
+    /// Final notes from the part notes of a long meeting. The AI only writes the title and topics;
+    /// decisions, next steps and open questions are collected from the parts by code, so the merge
+    /// can never drop one (a small model rewriting everything at once loses items).
+    pub fn meeting_merge(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, minutes: u32) -> Result<String> {
+        let mine = my_notes.trim();
+        let system = format!("{}{}", MEETING_MERGE.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, !mine.is_empty()));
+        let topics_only: Vec<String> = parts.iter().map(|p| strip_sections(p, &LIST_SECTIONS)).collect();
+        let joined = topics_only.iter().enumerate().map(|(i, p)| format!("### Part {}\n{p}", i + 1)).collect::<Vec<_>>().join("\n\n");
+        let body = if mine.is_empty() { joined } else { format!("My own notes:\n{mine}\n\n---\n\n{joined}") };
+        let mut notes = strip_sections(&self.chat_with(&system, &body, 1500, Duration::from_secs(600))?, &LIST_SECTIONS);
+        for (heading, aliases) in [("Decisions", &["decisions"][..]), ("Next steps", &["next steps", "action items"][..]), ("Open questions", &["open questions"][..])] {
+            let items = collect_items(parts, aliases);
+            if !items.is_empty() {
+                notes.push_str(&format!("\n\n## {heading}\n{}", items.join("\n")));
             }
-            cur.push_str(line);
-            cur.push('\n');
         }
-        if !cur.is_empty() {
-            parts.push(cur);
-        }
-        let mut notes = Vec::new();
-        for (i, p) in parts.iter().enumerate() {
-            crate::log::log(format!("meeting notes: part {} of {}", i + 1, parts.len()));
-            notes.push(self.chat_with(&part, p, 900, timeout)?);
-        }
-        Ok(drop_empty_sections(&self.chat_with(&merge, &with_mine(&notes.join("\n\n---\n\n")), 1500, timeout)?))
+        Ok(drop_empty_sections(notes.trim()))
     }
 }
+
+/// The list sections that are gathered by code rather than rewritten by the merge.
+const LIST_SECTIONS: [&str; 4] = ["decisions", "next steps", "action items", "open questions"];
+
+fn heading_is(line: &str, names: &[&str]) -> bool {
+    line.strip_prefix("## ").is_some_and(|h| names.iter().any(|n| h.trim().trim_end_matches(':').eq_ignore_ascii_case(n)))
+}
+
+/// `md` without the `## <name>` sections listed in `names`.
+fn strip_sections(md: &str, names: &[&str]) -> String {
+    let mut out = Vec::new();
+    let mut skipping = false;
+    for line in md.lines() {
+        if line.starts_with('#') {
+            skipping = heading_is(line, names);
+        }
+        if !skipping {
+            out.push(line);
+        }
+    }
+    out.join("\n").trim().to_string()
+}
+
+/// Every bullet under the given section names across all parts, in order, without duplicates.
+fn collect_items(parts: &[String], names: &[&str]) -> Vec<String> {
+    let norm = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+    let mut seen = std::collections::HashSet::new();
+    let mut items = Vec::new();
+    for p in parts {
+        let mut inside = false;
+        for line in p.lines() {
+            if line.starts_with('#') {
+                inside = heading_is(line, names);
+                continue;
+            }
+            let l = line.trim_end();
+            if inside && (l.trim_start().starts_with("- ") || l.trim_start().starts_with("* ")) && seen.insert(norm(l)) {
+                items.push(l.to_string());
+            }
+        }
+    }
+    items}

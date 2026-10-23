@@ -1,4 +1,5 @@
 import type { HistoryItem } from "../../lib/api";
+import { Tick, type Selection } from "./Select";
 
 const clockTime = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -12,12 +13,14 @@ export function dayOf(ts: string): string {
   return d.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
 }
 
-/** One dictation as a single line; clicking it opens the full entry. */
-export default function HistoryRow({ item, open }: { item: HistoryItem; open: (item: HistoryItem) => void }) {
+/** One dictation as a single line; clicking it opens the full entry (or ticks it while selecting). */
+export default function HistoryRow({ item, open, sel }: { item: HistoryItem; open: (item: HistoryItem) => void; sel?: Selection }) {
   const text = item.corrected ?? item.cleaned;
+  const picking = !!sel?.on;
   return (
-    <div className={`hrow ${item.corrected ? "corrected" : ""}`}>
-      <button className="hrow-line" onClick={() => open(item)}>
+    <div className={`hrow ${item.corrected ? "corrected" : ""} ${picking && sel.has(item.id) ? "picked" : ""}`}>
+      <button className={`hrow-line ${picking ? "picking" : ""}`} onClick={() => (picking ? sel.toggle(item.id) : open(item))}>
+        {picking && <Tick on={sel.has(item.id)} />}
         <span className="htime">{clockTime(item.ts)}</span>
         <span className="happ">{item.app || "—"}</span>
         <span className="htext" dir="auto">{text.replace(/\s+/g, " ")}</span>

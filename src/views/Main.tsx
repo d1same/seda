@@ -38,12 +38,26 @@ export default function Main() {
   // The call card's "Open notes" jumps straight to Meetings.
   useEffect(() => on<SectionId>("navigate", setSection), []);
   const win = inTauri ? getCurrentWindow() : null;
+  // Maximize/restore button state follows the window (also when maximized by double-clicking the title bar).
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    if (!win) return;
+    const sync = () => { win.isMaximized().then(setMaximized).catch(() => {}); };
+    sync();
+    const un = win.onResized(sync);
+    return () => { un.then((f) => f()); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const lamp = status.asr === "error" || status.llm === "error" ? "err" : status.asr === "ready" && status.llm !== "loading" ? "ok" : "busy";
   const lampText = lamp === "ok" ? "Ready" : lamp === "err" ? "Needs attention" : "Starting up…";
 
   const windowButtons = (
     <div className="win-buttons">
       <button aria-label="Minimize" onClick={() => win?.minimize()}><svg width="10" height="10"><path d="M0 5h10" stroke="currentColor" /></svg></button>
+      <button aria-label={maximized ? "Restore" : "Maximize"} onClick={() => win?.toggleMaximize()}>
+        {maximized
+          ? <svg width="10" height="10" fill="none" stroke="currentColor"><path d="M2.5 0.5h7v7M0.5 2.5h7v7h-7z" /></svg>
+          : <svg width="10" height="10" fill="none" stroke="currentColor"><rect x="0.5" y="0.5" width="9" height="9" /></svg>}
+      </button>
       <button aria-label="Close to tray" className="close" onClick={() => win?.hide()}><svg width="10" height="10"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" /></svg></button>
     </div>
   );
