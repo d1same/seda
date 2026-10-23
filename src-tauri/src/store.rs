@@ -53,6 +53,8 @@ pub struct TrainingStats {
 impl Store {
     pub fn open() -> anyhow::Result<Self> {
         let conn = Connection::open(crate::settings::data_dir().join("seda.db"))?;
+        // Deleted dictations and meetings are overwritten in the file, not just unlinked.
+        conn.execute_batch("PRAGMA secure_delete = ON;")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS history(
                 id INTEGER PRIMARY KEY, ts TEXT NOT NULL, app TEXT, style TEXT, raw TEXT, cleaned TEXT,

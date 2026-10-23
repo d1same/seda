@@ -6,12 +6,13 @@ use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const PORT: u16 = 8791;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub struct Llm {
     child: Child,
     http: reqwest::blocking::Client,
+    /// Random free port, new on every launch.
+    port: u16,
 }
 
 impl Drop for Llm {
@@ -156,6 +157,18 @@ fn who_is_you(user: &str) -> String {
     format!("\n\nThe user (\"You\" in the transcript) is called {n}. When someone addresses {n} (for example \"{n}, can you…\"), that is a task for {n}. Write the user's own tasks as \"{n}: …\" and refer to the user as {n}, never as \"You\".")
 }
 
+/// A free port on this PC, picked by Windows.
+fn free_port() -> Result<u16> {
+    Ok(std::net::TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
+}
+
+/// 32 random bytes as hex, from the operating system's secure random source.
+fn random_key() -> Result<String> {
+    let mut b = [0u8; 32];
+    getrandom::fill(&mut b).map_err(|e| anyhow!("random: {e}"))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
 impl Llm {
     pub fn start(server: &str, model: &str) -> Result<Self> {
         if !std::path::Path::new(server).exists() {
@@ -175,26 +188,47 @@ impl Llm {
         let layers = if gpu { "99" } else { "0" };
         // The engine's own output goes to llama.log next to seda.log: it says why a start was slow or failed.
         let engine_log = std::fs::File::create(crate::settings::data_dir().join("llama.log"))?;
+        // Locked down: reachable only from this PC, on a port that is new on every launch, only with
+        // a password that is new on every launch and known only to Seda (passed privately in the
+        // environment, not on the command line), no status page (it can show what the AI is working
+        // on), and no browser access (a web page could otherwise call it from your browser).
+        let key = random_key()?;
+        let port = free_port()?;
         let child = Command::new(server)
-            .args(["-m", model, "--port", &PORT.to_string(), "--host", "127.0.0.1", "-ngl", layers, "-c", "16384", "--jinja", "--reasoning", "off"])
+            .args(["-m", model, "--port", &port.to_string(), "--host", "127.0.0.1", "-ngl", layers, "-c", "16384", "--jinja", "--reasoning", "off"])
+            .args(["--no-slots", "--cors-origins", "http://127.0.0.1:1"])
+            .env("LLAMA_API_KEY", &key)
             .stdout(Stdio::null())
             .stderr(Stdio::from(engine_log))
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()?;
         die_with_parent(&child);
-        crate::log::log(format!("writing AI starting on {} ({})", if gpu { "GPU" } else { "CPU" }, model));
-        let http = reqwest::blocking::Client::builder().timeout(Duration::from_secs(60)).build()?;
-        let mut me = Self { child, http };
+        crate::log::log(format!("writing AI starting on {}", if gpu { "GPU" } else { "CPU" }));
+        let mut auth = reqwest::header::HeaderMap::new();
+        auth.insert(reqwest::header::AUTHORIZATION, format!("Bearer {key}").parse()?);
+        let http = reqwest::blocking::Client::builder().timeout(Duration::from_secs(60)).default_headers(auth).build()?;
+        let mut me = Self { child, http, port };
         let t = Instant::now();
         let mut noted = false;
         loop {
             if let Ok(Some(status)) = me.child.try_wait() {
                 return Err(anyhow!("Text AI exited early ({status}) — see llama.log"));
             }
-            if let Ok(r) = me.http.get(format!("http://127.0.0.1:{PORT}/health")).send() {
-                if r.status().is_success() {
-                    break;
+            // Talk to the port only once our own engine is the one listening on it: another program
+            // grabbing it first must never receive the password or your text.
+            match crate::win::tcp_listener_pid(port) {
+                Some(pid) if pid == me.child.id() => {
+                    if let Ok(r) = me.http.get(format!("http://127.0.0.1:{port}/health")).send() {
+                        if r.status().is_success() {
+                            break;
+                        }
+                    }
                 }
+                Some(_) => {
+                    let _ = me.child.kill();
+                    return Err(anyhow!("Another program took the writing AI's port — restart Seda"));
+                }
+                None => {}
             }
             // The very first start on a PC compiles GPU shaders for that graphics card, which can take
             // several minutes (only once). Keep waiting while the engine is alive.
@@ -228,6 +262,11 @@ impl Llm {
     }
 
     fn chat_messages(&mut self, messages: Vec<serde_json::Value>, max_tokens: usize, timeout: Duration) -> Result<String> {
+        // If the engine has died, its port could be taken by something else: never send it text.
+        if !matches!(self.child.try_wait(), Ok(None)) {
+            return Err(anyhow!("the writing AI stopped — restart Seda"));
+        }
+        let port = self.port;
         let body = json!({
             "messages": messages,
             "temperature": 0.2,
@@ -237,7 +276,7 @@ impl Llm {
         });
         let r: serde_json::Value = self
             .http
-            .post(format!("http://127.0.0.1:{PORT}/v1/chat/completions"))
+            .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
             .timeout(timeout)
             .json(&body)
             .send()?

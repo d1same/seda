@@ -55,11 +55,16 @@ pub fn input_devices() -> Vec<String> {
 }
 
 /// Names of the speakers/headsets Windows offers (all of them are recorded in a meeting).
+/// Each name once: several monitors can report the same name, and opening by name would just
+/// record that first device again.
 pub fn output_devices() -> Vec<String> {
-    cpal::default_host()
+    let mut names: Vec<String> = cpal::default_host()
         .output_devices()
         .map(|ds| ds.filter_map(|d| d.name().ok()).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|n| seen.insert(n.clone()));
+    names
 }
 
 /// The microphone to use: the one named in settings if it's still connected, else Windows' default.

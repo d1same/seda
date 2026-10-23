@@ -73,6 +73,9 @@ struct Item {
     /// File name inside models_dir() (for zips: the file we need after unpacking).
     file: &'static str,
     url: &'static str,
+    /// SHA-256 of the download (as published by its host). A mismatch is refused: a hacked or
+    /// tampered host can't slip in a different program or model.
+    sha256: &'static str,
     approx_mb: u32,
     /// Places this file may already exist on this PC, relative to the user's home folder.
     known: &'static [&'static str],
@@ -85,6 +88,7 @@ const SPEECH_FA: Item = Item {
     name: "Persian speech model",
     file: "ggml-fa-turbo-q5_0.bin",
     url: "https://github.com/d1same/seda-models/releases/download/v1/ggml-fa-turbo-q5_0.bin",
+    sha256: "6debcd339f7504abd0e5328776900bf4bda67280353f5754277684ff7626dec1",
     approx_mb: 548,
     known: &[],
     zip_into: None,
@@ -94,7 +98,8 @@ const SPEECH_MULTI: Item = Item {
     id: "speech",
     name: "Speech model (multilingual)",
     file: "ggml-large-v3-turbo-q5_0.bin",
-    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin",
+    sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
     approx_mb: 548,
     known: &[],
     zip_into: None,
@@ -103,7 +108,8 @@ const VAD: Item = Item {
     id: "vad",
     name: "Voice detector",
     file: "ggml-silero-v6.2.0.bin",
-    url: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
+    url: "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin",
+    sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
     approx_mb: 1,
     known: &[],
     zip_into: None,
@@ -113,6 +119,7 @@ const SERVER: Item = Item {
     name: "AI engine (llama.cpp, GPU)",
     file: r"llama\llama-server.exe",
     url: "https://github.com/ggml-org/llama.cpp/releases/download/b11819/llama-b11819-bin-win-vulkan-x64.zip",
+    sha256: "c3b2484d18258425fe3f69d0b6d07dce01501d6e010578dad3e53150a30df557",
     approx_mb: 35,
     known: &[],
     zip_into: Some("llama"),
@@ -121,7 +128,8 @@ const LLM_FULL: Item = Item {
     id: "llm",
     name: "Writing AI (Gemma 4 E4B)",
     file: "gemma-4-E4B-it-Q4_K_M.gguf",
-    url: "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
+    url: "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/bfc15c382204943c3a8fff0c750b94ae2364d7a3/gemma-4-E4B-it-Q4_K_M.gguf",
+    sha256: "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87",
     approx_mb: 4600,
     known: &[],
     zip_into: None,
@@ -130,7 +138,8 @@ const LLM_LIGHT: Item = Item {
     id: "llm",
     name: "Writing AI (Gemma 4 E2B, lighter)",
     file: "gemma-4-E2B-it-Q4_K_M.gguf",
-    url: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
+    url: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
+    sha256: "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8",
     approx_mb: 2900,
     known: &[],
     zip_into: None,
@@ -201,6 +210,13 @@ pub fn resolved_paths(pack: &str, language: &str) -> (String, String, String) {
 /// Make the configured model paths valid on *this* PC: replace any that don't exist with a model
 /// found locally. Returns false when the speech model is missing, so setup must run again.
 pub fn reconcile(s: &mut crate::settings::Settings) -> bool {
+    // settings.json is a plain file: never run or load anything from outside the models folder.
+    for (path, engine) in [(&mut s.whisper_model, false), (&mut s.llm_model, false), (&mut s.llm_server, true)] {
+        if !path.is_empty() && !is_model_path(path, engine) {
+            crate::log::log("ignored a model/engine path outside the models folder");
+            path.clear();
+        }
+    }
     let exists = |p: &str| !p.is_empty() && Path::new(p).exists();
     // The speech model must match the chosen language (Persian model vs multilingual).
     let wanted = speech_item(&s.language).file;
@@ -223,6 +239,16 @@ pub fn reconcile(s: &mut crate::settings::Settings) -> bool {
     }
     let writing_ok = !s.cleanup || (exists(&s.llm_server) && exists(&s.llm_model));
     exists(&s.whisper_model) && writing_ok
+}
+
+/// True if path is an existing file inside the models folder (for the engine: llama-server.exe).
+pub fn is_model_path(path: &str, engine: bool) -> bool {
+    if path.starts_with(r"\\") || path.starts_with("//") {
+        return false; // network path
+    }
+    let (Ok(p), Ok(root)) = (std::fs::canonicalize(path), std::fs::canonicalize(models_dir())) else { return false };
+    let name_ok = !engine || p.file_name().is_some_and(|n| n.eq_ignore_ascii_case("llama-server.exe"));
+    p.is_file() && p.starts_with(&root) && name_ok
 }
 
 /// Where the voice detector lives (next to the speech model, or in the models folder).
@@ -250,6 +276,7 @@ pub fn download_missing(pack: &str, language: &str, progress: &dyn Fn(&str, u64,
         };
         crate::log::log(format!("downloading {} from {}", it.name, it.url));
         fetch(it.url, &target, &|d, t| progress(it.id, d, t)).with_context(|| format!("Downloading {}", it.name))?;
+        verify(&target, it.sha256).with_context(|| format!("Checking {}", it.name))?;
         if let Some(sub) = it.zip_into {
             unzip(&target, &dir.join(sub))?;
             let _ = std::fs::remove_file(&target);
@@ -307,11 +334,27 @@ fn fetch(url: &str, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a download whose SHA-256 isn't the published one (and delete it, so it's never used).
+fn verify(path: &Path, expected: &str) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut std::fs::File::open(path)?, &mut hasher)?;
+    let got = format!("{:x}", hasher.finalize());
+    if !got.eq_ignore_ascii_case(expected) {
+        let _ = std::fs::remove_file(path);
+        crate::log::log(format!("download check failed for {}: expected {expected}, got {got}", path.display()));
+        bail!("The download didn't match its official fingerprint and was deleted. Try again; if it keeps failing, the download source may have been tampered with.");
+    }
+    Ok(())
+}
+
 /// Command-line check of the downloader: fetch + unpack the AI engine into `dir`.
 pub fn download_test(dir: &Path) -> Result<()> {
     let zip = dir.join("server.zip");
     fetch(SERVER.url, &zip, &|d, t| print!("\r{:.1} / {:.1} MB   ", d as f64 / 1e6, t as f64 / 1e6))?;
     println!();
+    verify(&zip, SERVER.sha256)?;
+    println!("fingerprint OK");
     unzip(&zip, &dir.join("llama"))?;
     println!("unpacked: llama-server.exe present = {}", dir.join(SERVER.file).exists());
     Ok(())

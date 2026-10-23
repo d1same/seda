@@ -1,6 +1,6 @@
 [package]
 name = "seda"
-version = "0.1.1"
+version = "0.1.2"
 description = "Seda: private voice typing and meeting notes for Windows"
 authors = ["d1same"]
 license = "MIT"
@@ -14,9 +14,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# Testing aids (file-driven shortcut, paste and script triggers). Never enabled in release installers.
+test-hooks = []
+
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
-tauri-plugin-opener = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
@@ -29,6 +32,8 @@ whisper-rs = { version = "0.16", features = ["vulkan"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 arboard = "3"
+sha2 = "0.10"
+getrandom = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 hound = "3.5"
 dirs = "6"
@@ -50,6 +55,8 @@ features = [
   "Win32_Graphics_Dwm",
   "Win32_Security",
   "Win32_System_Registry",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_Networking_WinSock",
 ]
 
 [profile.release]

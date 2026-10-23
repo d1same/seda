@@ -118,7 +118,7 @@ impl Asr {
         // Background noise makes Whisper invent short phrases ("I don't know.", "Thank you.").
         // Drop results Whisper itself flags as non-speech, or that it is unsure of in every language.
         if best.no_speech > NO_SPEECH_ABOVE || best.conf < KEEP_ABOVE {
-            crate::log::log(format!("dropped as noise: conf {:.2}, no_speech {:.2}: {}", best.conf, best.no_speech, best.text));
+            crate::log::log(format!("dropped as noise: conf {:.2}, no_speech {:.2}", best.conf, best.no_speech));
             return Ok(String::new());
         }
         Ok(best.text)

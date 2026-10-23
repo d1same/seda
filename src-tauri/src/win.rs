@@ -103,15 +103,22 @@ fn ctrl_combo(letter: u16) {
 /// The previous clipboard comes back only after 1.5 s, and only if the clipboard still holds our
 /// text: browsers and Electron apps (Teams, Slack, Discord…) read the clipboard a moment after
 /// Ctrl+V, and restoring sooner made them paste the OLD clipboard instead.
+/// Put text on the clipboard without it landing in Windows clipboard history (Win+V) or the cloud
+/// clipboard: what you dictate shouldn't be kept or synced anywhere.
+fn set_private(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
+    use arboard::SetExtWindows;
+    cb.set().exclude_from_history().exclude_from_cloud().text(text.to_string())
+}
+
 pub fn paste(text: &str) -> anyhow::Result<()> {
     if foreground_is_elevated() {
         let mut cb = arboard::Clipboard::new()?;
-        cb.set_text(text.to_string())?;
+        set_private(&mut cb, text)?;
         anyhow::bail!("This window runs as administrator, so Windows blocks typing into it. The text is on your clipboard — press Ctrl+V.");
     }
     let mut cb = arboard::Clipboard::new()?;
     let previous = cb.get_text().ok();
-    cb.set_text(text.to_string())?;
+    set_private(&mut cb, text)?;
     std::thread::sleep(Duration::from_millis(60));
     ctrl_combo(0x56); // V
     let ours = text.to_string();
@@ -120,7 +127,7 @@ pub fn paste(text: &str) -> anyhow::Result<()> {
         let Ok(mut cb) = arboard::Clipboard::new() else { return };
         if cb.get_text().ok().as_deref() == Some(ours.as_str()) {
             if let Some(p) = previous {
-                let _ = cb.set_text(p);
+                let _ = set_private(&mut cb, &p); // it's already in history from when it was copied
             }
         }
     });
@@ -132,7 +139,7 @@ pub fn copy_selection() -> Option<String> {
     let mut cb = arboard::Clipboard::new().ok()?;
     let previous = cb.get_text().ok();
     let marker = "\u{2063}seda-empty\u{2063}";
-    cb.set_text(marker.to_string()).ok()?;
+    set_private(&mut cb, marker).ok()?;
     ctrl_combo(0x43); // C
     let t = Instant::now();
     let mut got = None;
@@ -147,13 +154,29 @@ pub fn copy_selection() -> Option<String> {
     }
     match previous {
         Some(p) => {
-            let _ = cb.set_text(p);
+            let _ = set_private(&mut cb, &p);
         }
         None => {
             let _ = cb.clear();
         }
     }
     got.filter(|s| !s.trim().is_empty())
+}
+
+/// Put text on the clipboard (kept out of clipboard history) without pasting it.
+pub fn copy_private(text: &str) -> anyhow::Result<()> {
+    let mut cb = arboard::Clipboard::new()?;
+    set_private(&mut cb, text)?;
+    Ok(())
+}
+
+/// A console or terminal window (cmd, PowerShell, Windows Terminal), where Enter runs a command.
+pub fn is_console(hwnd: isize) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
+    let mut buf = [0u16; 128];
+    let n = unsafe { GetClassNameW(HWND(hwnd as _), &mut buf) };
+    let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+    matches!(class.as_str(), "ConsoleWindowClass" | "CASCADIA_HOSTING_WINDOW_CLASS" | "PseudoConsoleWindow" | "mintty")
 }
 
 pub fn foreground() -> isize {
@@ -294,5 +317,25 @@ pub fn show_no_activate(hwnd: isize) {
 pub fn hide(hwnd: isize) {
     unsafe {
         let _ = ShowWindow(HWND(hwnd as _), SW_HIDE);
+    }
+}
+
+/// Which process is listening on 127.0.0.1:`port` (IPv4), if any. Seda only talks to its writing AI
+/// once this is the engine it started itself.
+pub fn tcp_listener_pid(port: u16) -> Option<u32> {
+    use windows::Win32::NetworkManagement::IpHelper::{GetExtendedTcpTable, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER};
+    use windows::Win32::Networking::WinSock::AF_INET;
+    unsafe {
+        let mut size = 0u32;
+        let _ = GetExtendedTcpTable(None, &mut size, false, AF_INET.0 as u32, TCP_TABLE_OWNER_PID_LISTENER, 0);
+        let mut buf = vec![0u8; size as usize + 1024];
+        if GetExtendedTcpTable(Some(buf.as_mut_ptr() as *mut _), &mut size, false, AF_INET.0 as u32, TCP_TABLE_OWNER_PID_LISTENER, 0) != 0 {
+            return None;
+        }
+        let table = &*(buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
+        let rows = std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize);
+        rows.iter()
+            .find(|r| u16::from_be((r.dwLocalPort & 0xFFFF) as u16) == port)
+            .map(|r| r.dwOwningPid)
     }
 }

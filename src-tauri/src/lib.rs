@@ -42,6 +42,8 @@ struct ActiveRec {
     started: Instant,
     exe: String,
     title: String,
+    /// The window in front when recording started (where the text will be pasted).
+    target: isize,
     live: Arc<Mutex<LiveText>>,
 }
 
@@ -205,7 +207,10 @@ impl Core {
 
     fn pill(&self, state: &'static str, app: &str, message: impl Into<String>) {
         let message = message.into();
-        log::log(format!("pill {state} [{app}] {}", message.chars().take(120).collect::<String>()));
+        // Never log what was said (the log ends up in "Copy diagnostics"): Seda's own error and
+        // status messages are fine, dictated text is logged as a length only.
+        let note = if matches!(state, "error" | "empty" | "cancelled") { message.clone() } else { format!("{} chars", message.chars().count()) };
+        log::log(format!("pill {state} {note}"));
         let generation = self.pill_gen.fetch_add(1, Ordering::SeqCst) + 1;
         match state {
             "listening" => self.set_tray("rec"),
@@ -351,12 +356,13 @@ impl Core {
             return;
         }
         let (exe, title) = win::foreground_app();
+        let target = win::foreground();
         let mic = self.settings.read().input_device.clone();
         match audio::start(&mic) {
             Ok(rec) => {
                 let app_name = win::friendly_app_name(&exe, &title);
                 let live = Arc::new(Mutex::new(LiveText::default()));
-                *self.rec.lock() = Some(ActiveRec { rec, started: Instant::now(), exe, title, live: live.clone() });
+                *self.rec.lock() = Some(ActiveRec { rec, started: Instant::now(), exe, title, target, live: live.clone() });
                 self.recording.store(true, Ordering::SeqCst);
                 hotkey::set_recording(true);
                 self.pill("listening", &app_name, "");
@@ -432,7 +438,7 @@ impl Core {
         self.pill("transcribing", &app_name, "");
         let me = self.clone();
         let live = active.live.clone();
-        std::thread::spawn(move || me.process(samples, secs, active.exe, active.title, app_name, Some(live)));
+        std::thread::spawn(move || me.process(samples, secs, active.exe, active.title, app_name, Some(active.target), Some(live)));
     }
 
     /// Speech → text → learned fixes → AI cleanup. Returns (raw, final text, asr ms, llm ms).
@@ -496,7 +502,9 @@ impl Core {
         Ok((raw, text, asr_ms, t.elapsed().as_millis() as i64))
     }
 
-    fn process(self: &Arc<Self>, samples: Vec<f32>, secs: f64, exe: String, title: String, app_name: String, live: Option<Arc<Mutex<LiveText>>>) {
+    /// 	arget: the window that was in front when you started talking; text is pasted only there.
+    #[allow(clippy::too_many_arguments)]
+    fn process(self: &Arc<Self>, samples: Vec<f32>, secs: f64, exe: String, title: String, app_name: String, target: Option<isize>, live: Option<Arc<Mutex<LiveText>>>) {
         let s = self.settings.read().clone();
         let style = if s.app_styles { win::style_for(&exe, &title) } else { "" };
         let (raw, text, asr_ms, llm_ms) = match self.transcribe_and_clean(&samples, style, live, || self.pill("polishing", &app_name, "")) {
@@ -509,8 +517,16 @@ impl Core {
         }
 
         // A trailing space, so the next dictation doesn't glue onto this one ("…today.Please").
-        let pasted = if text.ends_with(char::is_whitespace) { text.clone() } else { format!("{text} ") };
-        if let Err(e) = win::paste(&pasted) {
+        let mut pasted = if text.ends_with(char::is_whitespace) { text.clone() } else { format!("{text} ") };
+        // In a terminal a line break runs a command: paste dictation there as one line.
+        if win::is_console(win::foreground()) {
+            pasted = pasted.replace("\r\n", " ").replace(['\r', '\n'], " ");
+        }
+        if target.is_some_and(|h| h != win::foreground()) {
+            // You moved to another window while Seda was writing: don't type into it.
+            let _ = win::copy_private(&text);
+            self.pill("error", &app_name, "You switched windows, so Seda didn't paste. Press Ctrl+V where you want it.");
+        } else if let Err(e) = win::paste(&pasted) {
             self.pill("error", &app_name, format!("Paste failed: {e}"));
         } else {
             self.pill("done", &app_name, text.clone());
@@ -645,6 +661,14 @@ fn update_setting(core: CoreState, key: String, value: serde_json::Value) -> Res
     if !obj.contains_key(&key) {
         return Err(format!("unknown setting {key}"));
     }
+    // Engine and model paths decide what program Seda runs: only files inside Seda's own models
+    // folder are accepted (never a network path or a program elsewhere).
+    if matches!(key.as_str(), "whisper_model" | "llm_model" | "llm_server") {
+        let p = value.as_str().unwrap_or_default();
+        if !p.is_empty() && !setup::is_model_path(p, key == "llm_server") {
+            return Err(format!("Choose a file inside {}", setup::models_dir().display()));
+        }
+    }
     obj.insert(key.clone(), value);
     let next: Settings = serde_json::from_value(json).map_err(|e| format!("bad value for {key}: {e}"))?;
     log::log(format!("setting {key} changed"));
@@ -691,8 +715,15 @@ fn apply_settings(core: &CoreState, mut settings: Settings) -> Result<(), String
 /// Settings is recording a new shortcut: let every key and button through untouched meanwhile.
 /// Shortcut pressed while a Seda window has focus: "down", "up" or "cancel".
 #[tauri::command]
-fn local_hotkey(event: String) {
+fn local_hotkey(window: tauri::WebviewWindow, event: String) -> Result<(), String> {
+    only(&window, "main")?;
     hotkey::local(&event);
+    Ok(())
+}
+
+/// Commands that act on your screen or microphone may only come from the window they belong to.
+fn only(window: &tauri::WebviewWindow, label: &str) -> Result<(), String> {
+    if window.label() == label { Ok(()) } else { Err(format!("not allowed from the {} window", window.label())) }
 }
 
 #[tauri::command]
@@ -782,7 +813,12 @@ struct TestResult {
 
 /// Run a WAV file through the full dictation pipeline without pasting (Engine → Test).
 #[tauri::command]
-async fn test_file(core: State<'_, Arc<Core>>, path: String, style: String) -> Result<TestResult, String> {
+async fn test_file(core: State<'_, Arc<Core>>, window: tauri::WebviewWindow, path: String, style: String) -> Result<TestResult, String> {
+    only(&window, "main")?;
+    let path = path.trim().trim_matches('"').to_string();
+    if path.starts_with(r"\\") || path.starts_with("//") {
+        return Err("Pick a file on this PC (network paths aren't allowed)".into());
+    }
     let core = core.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let samples = audio::load_wav(path.trim().trim_matches('"')).map_err(|e| format!("Couldn't read the file: {e}"))?;
@@ -795,12 +831,18 @@ async fn test_file(core: State<'_, Arc<Core>>, path: String, style: String) -> R
 }
 
 #[tauri::command]
-fn fix_rewrite(core: CoreState, mode: String) {
+fn fix_rewrite(core: CoreState, window: tauri::WebviewWindow, mode: String) {
+    if only(&window, "fix").is_err() {
+        return;
+    }
     core.inner().fix_run(mode);
 }
 
 #[tauri::command]
-fn fix_accept(core: CoreState, text: String) {
+fn fix_accept(core: CoreState, window: tauri::WebviewWindow, text: String) {
+    if only(&window, "fix").is_err() {
+        return;
+    }
     core.fix_close(Some(text));
 }
 
@@ -871,7 +913,7 @@ fn setup_download(core: CoreState, pack: String) {
             let _ = s.save();
             s.clone()
         };
-        log::log(format!("setup complete ({pack}): {}", serde_json::to_string(&settings).unwrap_or_default()));
+        log::log(format!("setup complete ({pack}, language {})", settings.language));
         let _ = app.emit("settings-changed", ()); // the window must pick up the new model paths
         core.load_asr();
         core.load_llm();
@@ -886,7 +928,8 @@ fn setup_cancel() {
 
 /// Microphone check during setup: emits "mic-level" while running.
 #[tauri::command]
-fn mic_test_start(core: CoreState) -> Result<(), String> {
+fn mic_test_start(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "main")?;
     let mic = core.settings.read().input_device.clone();
     let rec = audio::start(&mic).map_err(|e| e.to_string())?;
     *core.mic_test.lock() = Some(rec);
@@ -905,7 +948,8 @@ fn mic_test_start(core: CoreState) -> Result<(), String> {
 /// Test mode only (SEDA_TEST_INPUT=1): show the pill in a given state without a key press.
 #[tauri::command]
 fn test_pill(core: CoreState, state: String) {
-    if std::env::var("SEDA_TEST_INPUT").as_deref() != Ok("1") {
+    // Only in builds made with `--features test-hooks`, never in the public installer.
+    if !cfg!(feature = "test-hooks") || std::env::var("SEDA_TEST_INPUT").as_deref() != Ok("1") {
         return;
     }
     let s: &'static str = match state.as_str() {
@@ -949,7 +993,7 @@ fn diagnostics(core: CoreState) -> String {
         .available_monitors()
         .map(|ms| ms.iter().map(|m| format!("{}x{}@{:.2}", m.size().width, m.size().height, m.scale_factor())).collect::<Vec<_>>().join(", "))
         .unwrap_or_default();
-    format!(
+    let report = format!(
         "Seda {} diagnostics\nexe: {}\ngpu: {} (vram {:.1} GB, integrated {}) · ram {:.0} GB · monitors: {}\n\
          speech: {} on {} {}\nwriting AI: {} {}\nbindings: dictate {:?} / fix {:?} · mode {} · language {} · cleanup {}\n\
          models: {} | {} | {}\nonboarded: {}\n--- log ---\n{}",
@@ -961,13 +1005,19 @@ fn diagnostics(core: CoreState) -> String {
         s.dictate_binding, s.fix_binding, s.dictate_mode, s.language, s.cleanup,
         s.whisper_model, s.llm_server, s.llm_model, s.onboarded,
         tail.join("\n")
-    )
+    );
+    // Shared with whoever helps: hide the Windows user name in paths (C:\Users\<name>\… → ~\…).
+    match dirs::home_dir() {
+        Some(home) => report.replace(&home.display().to_string(), "~"),
+        None => report,
+    }
 }
 
 // ---------- meetings ----------
 
 #[tauri::command]
-fn meeting_start(core: CoreState) -> Result<(), String> {
+fn meeting_start(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "main")?;
     start_meeting(core.inner())
 }
 
@@ -1092,10 +1142,15 @@ fn watch_calls(core: Arc<Core>) {
 
 /// "Start notes" on the call card.
 #[tauri::command]
-fn call_start(core: CoreState) -> Result<(), String> {
+fn call_start(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "call")?;
+    call_start_now(core.inner())
+}
+
+fn call_start_now(core: &Arc<Core>) -> Result<(), String> {
     let app = core.call.lock().asking.take();
     let name = app.and_then(detect::by_id).map(|a| a.name).unwrap_or("call");
-    start_meeting(core.inner())?;
+    start_meeting(core)?;
     {
         let mut c = core.call.lock();
         c.linked = app;
@@ -1410,19 +1465,30 @@ fn selftest(args: &[String]) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Developer command-line tools: only in builds made with `--features test-hooks`; the public
+    // installer has none (the compiler drops this code entirely when the feature is off).
+    if cfg!(feature = "test-hooks") && dev_cli() {
+        return;
+    }
+    tauri_main();
+}
+
+/// Runs a developer command (--selftest, --download-test, --calls, --setup-status). True if it did.
+fn dev_cli() -> bool {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--selftest") {
-        return selftest(&args[2..]);
+        selftest(&args[2..]);
+        return true;
     }
     if let (Some("--download-test"), Some(dir)) = (args.get(1).map(String::as_str), args.get(2)) {
         if let Err(e) = setup::download_test(std::path::Path::new(dir)) {
             println!("download test failed: {e:#}");
         }
-        return;
+        return true;
     }
     if args.get(1).map(String::as_str) == Some("--calls") {
         print!("{}", detect::report());
-        return;
+        return true;
     }
     if args.get(1).map(String::as_str) == Some("--setup-status") {
         let hw = setup::hardware();
@@ -1430,12 +1496,16 @@ pub fn run() {
         for p in ["full", "light", "speech"] {
             println!("{p}: {}", serde_json::to_string(&setup::status(p, "fa")).unwrap_or_default());
         }
-        return;
+        return true;
     }
+    false
+}
+
+fn tauri_main() {
+    log::scrub_old_logs();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
-        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_settings, update_setting, set_hotkeys_paused, get_status, reload_models, history, correct_history,
             delete_history, vocab_list, vocab_add, vocab_remove, fixes_list, fix_add, fix_remove, training_stats,
@@ -1505,7 +1575,8 @@ pub fn run() {
 
             let (tx, rx) = crossbeam_channel::unbounded();
             hotkey::start(settings.dictate_binding.clone(), settings.fix_binding.clone(), tx.clone());
-            if std::env::var("SEDA_TEST_INPUT").as_deref() == Ok("1") {
+            // Test hooks exist only in builds made with `--features test-hooks` (never the public installer).
+            if cfg!(feature = "test-hooks") && std::env::var("SEDA_TEST_INPUT").as_deref() == Ok("1") {
                 // Test mode: drive the shortcut from a file, for machines where synthetic key
                 // presses can't reach the hook. Write "down", "up", "fix", "paste:<text>" or "wav:<file>".
                 let c = core.clone();
@@ -1523,7 +1594,7 @@ pub fn run() {
                             "fix" => { let _ = tx.send(HotkeyEvent::Fix); }
                             "call-off" => *detect::TEST_ACTIVE.lock() = None,
                             s if s.starts_with("call-on:") => *detect::TEST_ACTIVE.lock() = Some(s[8..].to_string()),
-                            "call-start" => log::log(format!("test call start: {:?}", call_start(c.app.state()))),
+                            "call-start" => log::log(format!("test call start: {:?}", call_start_now(&c))),
                             "show" => show_main(&c.app),
                             s if s.starts_with("eval:") => {
                                 // Run script in the main window (e.g. focus a field, copy its value into the title).
@@ -1531,7 +1602,7 @@ pub fn run() {
                                     log::log(format!("test eval: {:?}", w.eval(&s[5..])));
                                 }
                             }
-                            "meeting-start" => log::log(format!("test meeting start: {:?}", meeting_start(c.app.state()))),
+                            "meeting-start" => log::log(format!("test meeting start: {:?}", start_meeting(&c))),
                             "meeting-stop" => log::log(format!("test meeting stop: {:?}", meeting_stop(c.app.state()))),
                             _ => if let Some(t) = cmd.strip_prefix("paste:") {
                                 log::log(format!("test paste: {:?}", win::paste(t)));
@@ -1544,7 +1615,7 @@ pub fn run() {
                                     Ok(samples) => {
                                         let secs = samples.len() as f64 / audio::RATE as f64;
                                         c.pill("transcribing", "Test", "");
-                                        c.process(samples, secs, "notepad.exe".into(), "Test".into(), "Test".into(), None);
+                                        c.process(samples, secs, "notepad.exe".into(), "Test".into(), "Test".into(), None, None);
                                     }
                                     Err(e) => log::log(format!("test wav: {e}")),
                                 }
