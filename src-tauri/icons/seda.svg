@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Seda mark: a voice wave that turns into a handwritten "s", with a live status dot. -->
+  <rect x="80" y="80" width="864" height="864" rx="210" fill="#151515"/>
+  <path d="M250 560
+           C 290 560, 306 448, 342 448
+           C 382 448, 380 596, 424 596
+           C 468 596, 466 408, 514 408
+           C 560 408, 552 590, 596 590
+           C 632 590, 652 470, 712 420
+           C 700 470, 650 488, 664 520
+           C 680 556, 760 548, 752 604
+           C 744 650, 664 652, 630 628"
+        fill="none" stroke="#ffffff" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="770" cy="770" r="52" fill="#3ddc5c"/>
+</svg>

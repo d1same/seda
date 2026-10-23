@@ -1,0 +1,20 @@
+/* The call card is its own small window (340×84), always dark like the pill. */
+html, body, #root { background: #141210 !important; overflow: hidden; margin: 0; }
+
+.call-card {
+  display: flex; align-items: center; gap: 12px; height: 100vh; box-sizing: border-box; padding: 0 12px 0 14px;
+  background: #141210; color: #efe7d8; font-family: "IBM Plex Sans", "Vazirmatn", sans-serif;
+  animation: call-in .22s ease-out;
+}
+@keyframes call-in { from { opacity: 0; transform: translateY(6px); } }
+.call-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.call-text b { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.call-text span { font-size: 12px; color: #a79e8d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.call-acts { display: flex; flex-direction: column; gap: 5px; flex: none; }
+.call-acts button {
+  height: 26px; padding: 0 12px; border: 1px solid #3a352d; border-radius: 6px; background: transparent;
+  color: #cfc6b5; font: 500 12px "IBM Plex Sans", sans-serif; cursor: pointer;
+}
+.call-acts button:hover { border-color: #6d6556; color: #efe7d8; }
+.call-acts button.primary { background: #3ddc5c; border-color: #3ddc5c; color: #0c1a10; }
+.call-acts button.primary:hover { background: #57e674; }

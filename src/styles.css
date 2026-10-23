@@ -1,0 +1,164 @@
+/* Seda — "studio" design language: paper + ink, the logo's green as brand colour (red only for
+   recording and errors), hairline rules, mono micro-labels. No gradients, glass, or floating cards. */
+
+:root {
+  --paper: #f2eee5;
+  --paper-2: #e9e3d6;
+  --paper-3: #ddd5c4;
+  --ink: #1c1a16;
+  --ink-2: #5b554a;
+  --ink-3: #8f887a;
+  --rule: #d3cab8;
+  --rule-strong: #b9ae99;
+  --brand: #1e9645;
+  --brand-ink: #ffffff;
+  --brand-soft: #cdebd6;
+  --signal: #e2462c;
+  --signal-ink: #fffaf3;
+  --signal-soft: #f6d3c8;
+  --ok: #1e9645;
+  --amber: #b97813;
+  --sel: #f0c9a8;
+  --focus: #1c1a16;
+
+  --sans: "IBM Plex Sans", "Vazirmatn", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", "Vazirmatn", ui-monospace, monospace;
+  --fa: "Vazirmatn", "IBM Plex Sans", sans-serif;
+  --r: 3px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #151410;
+    --paper-2: #1d1b17;
+    --paper-3: #26231e;
+    --ink: #ece6d8;
+    --ink-2: #aaa293;
+    --ink-3: #6f685c;
+    --rule: #2d2a24;
+    --rule-strong: #443f36;
+    --brand: #3ddc5c;
+    --brand-ink: #0c1a10;
+    --brand-soft: #173d22;
+    --signal: #ff5a3c;
+    --signal-ink: #1a0f0b;
+    --signal-soft: #4a2219;
+    --ok: #3ddc5c;
+    --amber: #e3a540;
+    --sel: #5b3a22;
+    --focus: #ece6d8;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font: 14px/1.5 var(--sans);
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  overflow: hidden;
+}
+::selection { background: var(--sel); }
+[dir="rtl"], .fa { font-family: var(--fa); }
+input, textarea, button, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* ---------- shared primitives ---------- */
+
+.label {
+  font: 500 10.5px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--ink-2); }
+.faint { color: var(--ink-3); }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 32px; padding: 0 14px;
+  border: 1px solid var(--rule-strong); border-radius: var(--r);
+  background: transparent; font-weight: 500; font-size: 13px;
+  transition: background .12s, border-color .12s;
+}
+.btn:hover { background: var(--paper-2); border-color: var(--ink-3); }
+.btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btn.primary:hover { background: var(--ink-2); }
+.btn.signal { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
+.btn.ghost { border-color: transparent; }
+.btn.small { height: 26px; padding: 0 10px; font-size: 12px; }
+.btn:disabled { opacity: .45; cursor: default; }
+
+.field {
+  width: 100%; height: 34px; padding: 0 10px;
+  background: var(--paper); border: 1px solid var(--rule-strong); border-radius: var(--r);
+  user-select: text;
+}
+.field:focus { outline: none; border-color: var(--ink); }
+textarea.field { height: auto; padding: 10px; resize: vertical; line-height: 1.6; }
+
+/* Physical-looking switch: square-ish track with a sliding block. */
+.switch {
+  position: relative; width: 38px; height: 20px; flex: none;
+  border: 1px solid var(--rule-strong); border-radius: 2px; background: var(--paper-2);
+  transition: background .15s, border-color .15s;
+}
+.switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+  background: var(--ink-3); border-radius: 1px; transition: transform .15s, background .15s;
+}
+.switch.on { background: var(--ink); border-color: var(--ink); }
+.switch.on::after { transform: translateX(18px); background: var(--brand); }
+
+.segmented { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: var(--r); overflow: hidden; }
+.segmented button {
+  height: 30px; padding: 0 14px; border: 0; background: transparent; font-size: 13px; color: var(--ink-2);
+}
+.segmented button + button { border-left: 1px solid var(--rule-strong); }
+.segmented button.on { background: var(--ink); color: var(--paper); }
+
+.keycap {
+  display: inline-flex; align-items: center; height: 24px; padding: 0 8px;
+  font: 500 12px/1 var(--mono); letter-spacing: .02em;
+  border: 1px solid var(--rule-strong); border-bottom-width: 2px; border-radius: 3px;
+  background: var(--paper); color: var(--ink); white-space: nowrap;
+}
+.keys { display: inline-flex; gap: 4px; align-items: center; }
+
+.lamp { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.lamp.ok { background: var(--ok); }
+.lamp.busy { background: var(--amber); animation: blink 1s steps(2) infinite; }
+.lamp.err { background: var(--signal); }
+@keyframes blink { 50% { opacity: .3; } }
+
+.tag {
+  display: inline-block; padding: 1px 6px; border: 1px solid var(--rule-strong); border-radius: 2px;
+  font: 500 10px/1.5 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2);
+}
+
+.scroll { overflow-y: auto; }
+.scroll::-webkit-scrollbar { width: 10px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--rule); border: 3px solid var(--paper); border-radius: 6px; }
+
+/* Calmer, app-like type: sentence-case labels instead of tracked mono capitals; softer corners. */
+.label { font: 600 12px/1.3 var(--sans); letter-spacing: 0; text-transform: none; color: var(--ink-3); }
+.btn, .field, .segmented { border-radius: 6px; }
+
+/* Icon buttons: the standard action button across the app. */
+.ibtn { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border: 1px solid var(--rule-strong); border-radius: 8px; background: var(--paper); color: var(--ink-2); font: 500 13px var(--sans); cursor: pointer; transition: background .12s, color .12s, border-color .12s; }
+.ibtn:hover { color: var(--ink); border-color: var(--ink-3); background: var(--paper-2); }
+.ibtn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.ibtn.primary:hover { opacity: .9; }
+.ibtn.danger:hover { color: var(--signal); border-color: var(--signal); background: var(--signal-soft); }
+.ibtn.round { width: 32px; padding: 0; justify-content: center; border-radius: 50%; }
+.ibtn:disabled { opacity: .45; cursor: default; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.meta-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--paper-2); border: 1px solid var(--rule); font-size: 12.5px; color: var(--ink-2); }
+.meta-chip svg { color: var(--ink-3); }
+.meta-chip.ok { color: var(--ok); border-color: var(--brand-soft); }

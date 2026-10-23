@@ -1,0 +1,8 @@
+# Build settings for Windows. Adjust the paths below to where these tools are installed on your PC.
+[build]
+target-dir = "C:/s"  # short: the Vulkan shader build hits Windows' 260-character path limit otherwise
+
+[env]
+VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"
+CMAKE = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe"
+LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
