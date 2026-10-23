@@ -4,6 +4,8 @@
 
 Private voice typing and meeting notes for Windows. Everything runs on your own computer: nothing you say is uploaded.
 
+**[Download the installer](https://github.com/d1same/seda/releases/latest)** (Windows 10/11, 64-bit)
+
 - **Dictation anywhere.** Hold a shortcut (any key or mouse button, e.g. Mouse 4), talk, let go: clean, punctuated text is pasted where your cursor is. Say "no wait…" and Seda drops the part you took back.
 - **English + one more language.** Mix them in the same sentence. Persian has its own fine-tuned speech model; Chinese, Hindi, Spanish, Arabic, French, Portuguese, Russian, German, Japanese and Greek use the multilingual one.
 - **Writing AI.** A local model adds punctuation and paragraphs, and matches the app (email layout in Outlook/Gmail, bullets in Jira, casual in Teams/Slack).
@@ -46,3 +48,7 @@ The installer is written to `<target-dir>/release/bundle/nsis/`. For development
 - Audio, transcripts, notes and settings never leave your PC. The only network traffic is the one-time model download.
 - Call detection reads Windows' own "which app is using the microphone" list; Seda records only after you press Start (or if you choose "Record automatically" in Settings).
 - Delete any dictation or meeting from the app; its audio is deleted with it.
+
+## License
+
+[MIT](LICENSE): free to use, change and share, including commercially. The AI models Seda downloads have their own licenses: Whisper (MIT), the Persian Whisper fine-tune, Silero VAD (MIT), Gemma (Gemma Terms of Use).

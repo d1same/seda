@@ -1,8 +1,10 @@
 [package]
 name = "seda"
 version = "0.1.0"
-description = "Seda: local Farsi/English dictation and meeting notes"
-authors = ["Seda"]
+description = "Seda: private voice typing and meeting notes for Windows"
+authors = ["d1same"]
+license = "MIT"
+repository = "https://github.com/d1same/seda"
 edition = "2024"
 
 [lib]
