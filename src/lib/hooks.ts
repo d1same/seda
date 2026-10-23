@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Settings, type Status } from "./api";
-import { on } from "./events";
+import { api, type Binding, type Settings, type Status } from "./api";
+import { inTauri, on } from "./events";
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -32,4 +32,42 @@ export function useOnHistory(load: () => void) {
     load();
     return on("history-changed", () => load());
   }, [load]);
+}
+
+/** DOM mouse buttons → Seda's binding codes (1 = back/X1, 2 = forward/X2, 3 = middle). */
+const MOUSE_CODE: Record<number, number> = { 3: 1, 4: 2, 1: 3 };
+
+/** Windows doesn't call Seda's global keyboard/mouse hook while a Seda window has focus, so this
+ *  window watches for the dictation shortcut itself and hands it to the same logic. */
+export function useLocalShortcut(binding: Binding | undefined) {
+  useEffect(() => {
+    if (!binding || !inTauri) return;
+    const b = binding;
+    const keyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { api.localHotkey("cancel"); return; }
+      if (b.kind !== "key" || e.repeat || e.keyCode !== b.code) return;
+      if (e.ctrlKey !== b.ctrl || e.shiftKey !== b.shift || e.altKey !== b.alt || e.metaKey !== b.win) return;
+      e.preventDefault();
+      api.localHotkey("down");
+    };
+    const keyUp = (e: KeyboardEvent) => {
+      if (b.kind === "key" && e.keyCode === b.code) api.localHotkey("up");
+    };
+    const mouse = (down: boolean) => (e: MouseEvent) => {
+      if (b.kind !== "mouse" || MOUSE_CODE[e.button] !== b.code) return;
+      e.preventDefault();
+      api.localHotkey(down ? "down" : "up");
+    };
+    const md = mouse(true), mu = mouse(false);
+    window.addEventListener("keydown", keyDown);
+    window.addEventListener("keyup", keyUp);
+    window.addEventListener("mousedown", md);
+    window.addEventListener("mouseup", mu);
+    return () => {
+      window.removeEventListener("keydown", keyDown);
+      window.removeEventListener("keyup", keyUp);
+      window.removeEventListener("mousedown", md);
+      window.removeEventListener("mouseup", mu);
+    };
+  }, [binding?.kind, binding?.code, binding?.ctrl, binding?.shift, binding?.alt, binding?.win]); // eslint-disable-line react-hooks/exhaustive-deps
 }

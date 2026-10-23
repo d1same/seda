@@ -1,6 +1,6 @@
 [package]
 name = "seda"
-version = "0.1.0"
+version = "0.1.1"
 description = "Seda: private voice typing and meeting notes for Windows"
 authors = ["d1same"]
 license = "MIT"

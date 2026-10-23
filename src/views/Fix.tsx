@@ -14,7 +14,7 @@ const MODES: { id: string; label: string }[] = [
   { id: "to_fa", label: "→ فارسی" },
 ];
 
-const DEMO_IN = "hi sara, i has went to the meeting yesterday and we discuss about the budget, its was good but we needs more datas before friday.";
+const DEMO_IN = "hi sam, i has went to the meeting yesterday and we discuss about the budget, its was good but we needs more datas before friday.";
 const DEMO_OUT: Record<string, string> = {
   grammar: "Hi Sam, I went to the meeting yesterday and we discussed the budget. It was good, but we need more data before Friday.",
   formal: "Hi Sam, I attended yesterday's meeting, where we discussed the budget. It went well, though we will need additional data before Friday.",

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { inTauri, on } from "../lib/events";
 import { bindingParts, type Binding, type HistoryItem } from "../lib/api";
-import { useSettings, useStatus } from "../lib/hooks";
+import { useLocalShortcut, useSettings, useStatus } from "../lib/hooks";
 import Overview from "./sections/Overview";
 import History from "./sections/History";
 import Meetings from "./sections/Meetings";
@@ -33,6 +33,7 @@ export default function Main() {
   const setSection = (s: SectionId) => { setOpened(null); setSectionRaw(s); };
   const { settings, update } = useSettings();
   const status = useStatus();
+  useLocalShortcut(settings?.dictate_binding);
   // The call card's "Open notes" jumps straight to Meetings.
   useEffect(() => on<SectionId>("navigate", setSection), []);
   const win = inTauri ? getCurrentWindow() : null;

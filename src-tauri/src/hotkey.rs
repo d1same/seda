@@ -113,6 +113,31 @@ pub fn set_paused(paused: bool) {
     }
 }
 
+/// The shortcut as seen by Seda's own window. Windows doesn't call the low-level hook while one of
+/// Seda's windows has focus, so the window reports the key or button itself (see Main.tsx).
+/// Shares dictate_held with the hook, so a press can never count twice.
+pub fn local(event: &str) {
+    let Some(c) = CFG.get() else { return };
+    let mut c = c.lock();
+    if PAUSED.load(Ordering::Relaxed) {
+        return;
+    }
+    match event {
+        "down" if !c.dictate_held => {
+            c.dictate_held = true;
+            let _ = c.tx.send(HotkeyEvent::DictateDown);
+        }
+        "up" if c.dictate_held => {
+            c.dictate_held = false;
+            let _ = c.tx.send(HotkeyEvent::DictateUp);
+        }
+        "cancel" if c.recording => {
+            let _ = c.tx.send(HotkeyEvent::Cancel);
+        }
+        _ => {}
+    }
+}
+
 pub fn set_recording(on: bool) {
     if let Some(c) = CFG.get() {
         c.lock().recording = on;

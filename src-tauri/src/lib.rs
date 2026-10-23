@@ -689,6 +689,12 @@ fn apply_settings(core: &CoreState, mut settings: Settings) -> Result<(), String
 }
 
 /// Settings is recording a new shortcut: let every key and button through untouched meanwhile.
+/// Shortcut pressed while a Seda window has focus: "down", "up" or "cancel".
+#[tauri::command]
+fn local_hotkey(event: String) {
+    hotkey::local(&event);
+}
+
 #[tauri::command]
 fn set_hotkeys_paused(paused: bool) {
     log::log(format!("hotkeys paused: {paused}"));
@@ -1437,7 +1443,7 @@ pub fn run() {
             mic_test_start, mic_test_stop, list_mics, open_mic_privacy, test_pill, finish_onboarding, diagnostics, open_log,
             meeting_start, meeting_stop, meeting_status, meetings_list, meeting_get, meeting_delete, meeting_renotes,
             meeting_set_my_notes, meeting_save_notes, meeting_ask, meeting_clear_chat,
-            call_start, call_dismiss, call_hide, call_open, call_apps
+            call_start, call_dismiss, call_hide, call_open, call_apps, local_hotkey
         ])
         .setup(|app| {
             let mut settings = Settings::load();
@@ -1518,6 +1524,13 @@ pub fn run() {
                             "call-off" => *detect::TEST_ACTIVE.lock() = None,
                             s if s.starts_with("call-on:") => *detect::TEST_ACTIVE.lock() = Some(s[8..].to_string()),
                             "call-start" => log::log(format!("test call start: {:?}", call_start(c.app.state()))),
+                            "show" => show_main(&c.app),
+                            s if s.starts_with("eval:") => {
+                                // Run script in the main window (e.g. focus a field, copy its value into the title).
+                                if let Some(w) = c.app.get_webview_window("main") {
+                                    log::log(format!("test eval: {:?}", w.eval(&s[5..])));
+                                }
+                            }
                             "meeting-start" => log::log(format!("test meeting start: {:?}", meeting_start(c.app.state()))),
                             "meeting-stop" => log::log(format!("test meeting stop: {:?}", meeting_stop(c.app.state()))),
                             _ => if let Some(t) = cmd.strip_prefix("paste:") {

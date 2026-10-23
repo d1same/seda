@@ -73,6 +73,7 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   updateSetting: (key: string, value: unknown) => invoke<Settings>("update_setting", { key, value }),
   setHotkeysPaused: (paused: boolean) => invoke<void>("set_hotkeys_paused", { paused }),
+  localHotkey: (event: "down" | "up" | "cancel") => invoke<void>("local_hotkey", { event }),
   getStatus: () => invoke<Status>("get_status"),
   reloadModels: () => invoke<void>("reload_models"),
   history: (limit = 200) => invoke<HistoryItem[]>("history", { limit }),
