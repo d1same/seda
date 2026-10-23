@@ -1,6 +1,7 @@
 /* The pill IS the window: a small solid capsule (rounded by Windows 11 itself), so there is
    nothing transparent or clipped that could fail to draw. */
-html, body, #root { background: #141210 !important; overflow: hidden; margin: 0; }
+/* Scoped to the pill window: every CSS file ships in one bundle, so an unscoped rule would paint the main window dark too. */
+html.view-pill, html.view-pill body, html.view-pill #root { background: #141210 !important; overflow: hidden; margin: 0; }
 
 .pill-stage { height: 100vh; display: flex; align-items: center; justify-content: center; transition: opacity .14s ease; }
 .pill-stage.out { opacity: 0; }

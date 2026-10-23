@@ -1,5 +1,6 @@
 /* The call card is its own small window (340×84), always dark like the pill. */
-html, body, #root { background: #141210 !important; overflow: hidden; margin: 0; }
+/* Scoped to the call window: every CSS file ships in one bundle, so an unscoped rule would paint the main window dark too. */
+html.view-call, html.view-call body, html.view-call #root { background: #141210 !important; overflow: hidden; margin: 0; }
 
 .call-card {
   display: flex; align-items: center; gap: 12px; height: 100vh; box-sizing: border-box; padding: 0 12px 0 14px;
