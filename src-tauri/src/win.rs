@@ -270,6 +270,21 @@ pub fn round_corners(hwnd: isize) {
     }
 }
 
+/// Centre of the active window (screen pixels): tells which monitor you're typing on.
+pub fn foreground_center() -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+    unsafe {
+        let h = GetForegroundWindow();
+        if h.0.is_null() {
+            return None;
+        }
+        let mut r = RECT::default();
+        GetWindowRect(h, &mut r).ok()?;
+        (r.right > r.left).then_some(((r.left + r.right) / 2, (r.top + r.bottom) / 2))
+    }
+}
+
 pub fn show_no_activate(hwnd: isize) {
     unsafe {
         let _ = ShowWindow(HWND(hwnd as _), SW_SHOWNOACTIVATE);

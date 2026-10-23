@@ -216,8 +216,9 @@ impl Core {
         if let Some(w) = self.app.get_webview_window("pill") {
             // Compact capsule while working; wider only when there's a message to read.
             let wide = matches!(state, "error" | "empty");
-            if self.shape_pill(&w, if wide { PILL_WIDE } else { PILL }) || state == "listening" {
-                self.place_pill(&w);
+            let size = if wide { PILL_WIDE } else { PILL };
+            if self.shape_pill(&w, size) || state == "listening" {
+                self.place_pill(&w, size);
             }
             if let Ok(h) = w.hwnd() {
                 win::show_no_activate(h.0 as isize);
@@ -249,7 +250,7 @@ impl Core {
         let _ = self.app.emit_to("pill", "pill", PillState { state, app: String::new(), message: String::new() });
         if dot {
             self.shape_pill(&w, PILL_IDLE);
-            self.place_pill(&w);
+            self.place_pill(&w, PILL_IDLE);
             if let Ok(h) = w.hwnd() {
                 win::show_no_activate(h.0 as isize);
             }
@@ -281,23 +282,22 @@ impl Core {
         changed
     }
 
-    fn place_pill(&self, w: &tauri::WebviewWindow) {
-        let monitor = self
-            .app
-            .cursor_position()
-            .ok()
-            .and_then(|p| self.app.monitor_from_point(p.x, p.y).ok().flatten())
+    /// Bottom centre of the screen you're typing on: the one holding the active window (where the
+    /// text will be pasted), falling back to the mouse's screen. Sized for that screen's scaling.
+    fn place_pill(&self, w: &tauri::WebviewWindow, (lw, lh): (f64, f64)) {
+        let monitor = win::foreground_center()
+            .or_else(|| self.app.cursor_position().ok().map(|p| (p.x as i32, p.y as i32)))
+            .and_then(|(x, y)| self.app.monitor_from_point(x as f64, y as f64).ok().flatten())
             .or_else(|| self.app.primary_monitor().ok().flatten());
-        let (Some(m), Ok(size)) = (monitor, w.outer_size()) else { return };
+        let Some(m) = monitor else { return };
+        let size = tauri::PhysicalSize::new((lw * m.scale_factor()).round() as u32, (lh * m.scale_factor()).round() as u32);
         let area = m.work_area();
         let x = area.position.x + (area.size.width as i32 - size.width as i32) / 2;
         let margin = (28.0 * m.scale_factor()) as i32;
-        let y = if self.settings.read().pill_position == "top" {
-            area.position.y + margin
-        } else {
-            area.position.y + area.size.height as i32 - size.height as i32 - margin
-        };
+        let y = area.position.y + area.size.height as i32 - size.height as i32 - margin;
         let _ = w.set_position(PhysicalPosition::new(x, y));
+        let _ = w.set_size(size);
+        let _ = w.set_position(PhysicalPosition::new(x, y)); // again: a DPI change on the move can shift it
     }
 
     // ---------- dictation ----------

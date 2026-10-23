@@ -129,9 +129,6 @@ export default function Settings({ settings, update, status, go }: { settings: S
         <div className="advanced">
           <ToggleRow title="Match the app" help="Email layout in Outlook/Gmail, bullets in Jira, casual in Teams/Slack." on={settings.app_styles} onChange={(v) => update("app_styles", v)} />
           <ToggleRow title="English words in English letters" help="Keeps words like “deploy” in English letters instead of your language's script." on={settings.latin_tech_terms} onChange={(v) => update("latin_tech_terms", v)} />
-          <Row title="Indicator position">
-            <Segmented value={settings.pill_position} options={[["bottom", "Bottom"], ["top", "Top"]]} onChange={(v) => update("pill_position", v)} />
-          </Row>
           <div className="group-label label">Voice training</div>
           <Training settings={settings} update={update} go={go} embedded />
           <div className="group-label label">Engine</div>
