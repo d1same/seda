@@ -34,6 +34,10 @@ pub struct Meeting {
     pub my_notes: String,
     /// JSON list of {role: "you"|"ai", text} — the Ask conversation.
     pub chat: String,
+    /// JSON: {"parts": [...], "until": secs}. The part notes behind the final notes, kept so a
+    /// resumed meeting only needs notes for its new stretch.
+    #[serde(skip)]
+    pub parts: String,
 }
 
 #[derive(Serialize)]
@@ -65,7 +69,7 @@ impl Store {
                 id INTEGER PRIMARY KEY, ts TEXT NOT NULL, secs REAL, title TEXT, transcript TEXT, notes TEXT);",
         )?;
         // Added after the first meetings release: older databases get the columns here.
-        for col in ["my_notes", "chat"] {
+        for col in ["my_notes", "chat", "parts"] {
             let _ = conn.execute(&format!("ALTER TABLE meetings ADD COLUMN {col} TEXT DEFAULT ''"), []);
         }
         Ok(Self(Mutex::new(conn)))
@@ -129,6 +133,15 @@ impl Store {
         c.last_insert_rowid()
     }
 
+    /// After resuming: the combined transcript, new length and notepad.
+    pub fn update_meeting_recording(&self, id: i64, secs: f64, transcript: &str, my_notes: &str) {
+        let _ = self.0.lock().execute("UPDATE meetings SET secs=?, transcript=?, my_notes=? WHERE id=?", params![secs, transcript, my_notes, id]);
+    }
+
+    pub fn set_meeting_parts(&self, id: i64, parts: &str) {
+        let _ = self.0.lock().execute("UPDATE meetings SET parts=? WHERE id=?", params![parts, id]);
+    }
+
     pub fn set_meeting_notes(&self, id: i64, title: &str, notes: &str) {
         let _ = self.0.lock().execute("UPDATE meetings SET title=?, notes=? WHERE id=?", params![title, notes, id]);
     }
@@ -138,7 +151,7 @@ impl Store {
         let c = self.0.lock();
         let mut st = c.prepare("SELECT id,ts,secs,title FROM meetings ORDER BY id DESC").unwrap();
         st.query_map([], |r| {
-            Ok(Meeting { id: r.get(0)?, ts: r.get(1)?, secs: r.get(2)?, title: r.get(3)?, transcript: String::new(), notes: String::new(), my_notes: String::new(), chat: String::new() })
+            Ok(Meeting { id: r.get(0)?, ts: r.get(1)?, secs: r.get(2)?, title: r.get(3)?, transcript: String::new(), notes: String::new(), my_notes: String::new(), chat: String::new(), parts: String::new() })
         })
         .unwrap()
         .filter_map(Result::ok)
@@ -148,10 +161,10 @@ impl Store {
     pub fn meeting(&self, id: i64) -> Option<Meeting> {
         self.0
             .lock()
-            .query_row("SELECT id,ts,secs,title,transcript,notes,COALESCE(my_notes,''),COALESCE(chat,'[]') FROM meetings WHERE id=?", [id], |r| {
+            .query_row("SELECT id,ts,secs,title,transcript,notes,COALESCE(my_notes,''),COALESCE(chat,'[]'),COALESCE(parts,'') FROM meetings WHERE id=?", [id], |r| {
                 Ok(Meeting {
                     id: r.get(0)?, ts: r.get(1)?, secs: r.get(2)?, title: r.get(3)?, transcript: r.get(4)?, notes: r.get(5)?,
-                    my_notes: r.get(6)?, chat: r.get(7)?,
+                    my_notes: r.get(6)?, chat: r.get(7)?, parts: r.get(8)?,
                 })
             })
             .ok()

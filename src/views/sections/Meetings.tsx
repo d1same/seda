@@ -151,6 +151,7 @@ function MeetingDoc({ id, back, me }: { id: number; back: () => void; me: string
               <IconButton icon={copied ? "check" : "copy"} label={copied ? "Copied" : "Copy"} onClick={copy} />
               {tab === "notes" && !writing && <IconButton icon="edit" label="Edit" onClick={() => { setDraft({ title: m.title, notes: m.notes }); setEditing(true); }} />}
               {tab === "notes" && !writing && <IconButton icon="rewrite" label="Rewrite notes from the transcript" iconOnly onClick={() => api.meetingRenotes(id)} />}
+              {!writing && <IconButton icon="record" label="Resume" onClick={async () => { try { await api.meetingResume(id); } catch (e) { alert(String(e)); } }} />}
               <IconButton icon="trash" label="Delete meeting" iconOnly danger onClick={async () => { if (confirm("Delete this meeting, its notes and recording?")) { await api.meetingDelete(id); back(); } }} />
             </>
           )}
@@ -199,8 +200,8 @@ function LiveDoc({ st, stop, busy, me }: { st: MeetingStatus; stop: () => void; 
         <span className="rec-chip"><span className="rec-dot" />{clock(st.secs)}</span>
         <IconButton icon="check" label={busy ? "Finishing…" : "Stop & write notes"} primary disabled={busy} onClick={stop} />
       </div>
-      <div className="mdoc-meta">Today · {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · recording you and the call</div>
-      <h1 className="mdoc-title">New meeting</h1>
+      <div className="mdoc-meta">{st.resuming ? "Continuing · " : `Today · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · `}recording you and the call</div>
+      <h1 className="mdoc-title" dir="auto">{st.resuming || "New meeting"}</h1>
       <textarea className="notepad" dir="auto" autoFocus value={mine} onChange={(e) => change(e.target.value)} placeholder="Write notes… (optional — Seda builds the final notes on them)" />
 
       <div className="live-dock">

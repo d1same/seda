@@ -1045,7 +1045,24 @@ fn meeting_start(core: CoreState, window: tauri::WebviewWindow) -> Result<(), St
     start_meeting(core.inner())
 }
 
+/// Continue a stopped meeting: same transcript, clock and notepad; notes are rewritten at the end.
+#[tauri::command]
+fn meeting_resume(core: CoreState, window: tauri::WebviewWindow, id: i64) -> Result<(), String> {
+    only(&window, "main")?;
+    let m = core.store.meeting(id).ok_or("Meeting not found")?;
+    let segments: Vec<meeting::Segment> = serde_json::from_str(&m.transcript).unwrap_or_default();
+    let saved: serde_json::Value = serde_json::from_str(&m.parts).unwrap_or_default();
+    let parts: Vec<String> = serde_json::from_value(saved["parts"].clone()).unwrap_or_default();
+    let until = if parts.is_empty() { 0.0 } else { saved["until"].as_f64().unwrap_or(0.0) as f32 };
+    let resume = meeting::Resume { id, offset: m.secs as f32, segments, my_notes: m.my_notes, parts, until };
+    start_meeting_with(core.inner(), Some(resume))
+}
+
 fn start_meeting(core: &Arc<Core>) -> Result<(), String> {
+    start_meeting_with(core, None)
+}
+
+fn start_meeting_with(core: &Arc<Core>, resume: Option<meeting::Resume>) -> Result<(), String> {
     let mut m = core.meeting.lock();
     if m.is_some() {
         return Ok(());
@@ -1053,7 +1070,7 @@ fn start_meeting(core: &Arc<Core>) -> Result<(), String> {
     if core.asr.read().is_none() {
         return Err("The speech model isn't ready yet".into());
     }
-    *m = Some(meeting::Meeting::start(core.clone()).map_err(|e| e.to_string())?);
+    *m = Some(meeting::Meeting::start(core.clone(), resume).map_err(|e| e.to_string())?);
     let _ = core.app.emit("meeting-state", true);
     Ok(())
 }
@@ -1073,10 +1090,20 @@ fn stop_meeting(core: &Arc<Core>) -> Option<i64> {
         c.linked = None;
         c.dismissed = detect::active().iter().map(|a| a.id).collect();
     }
-    let (secs, ts, mine) = (m.started.elapsed().as_secs_f64(), m.ts.clone(), m.my_notes.lock().clone());
+    let (secs, ts, mine) = (m.offset as f64 + m.started.elapsed().as_secs_f64(), m.ts.clone(), m.my_notes.lock().clone());
+    let resumed = m.resume_id;
     let _ = core.app.emit("meeting-state", false);
     let (segs, live) = m.stop();
-    let id = core.store.add_meeting(&ts, secs, &serde_json::to_string(&segs).unwrap_or_default(), &mine);
+    let transcript = serde_json::to_string(&segs).unwrap_or_default();
+    let id = match resumed {
+        // Resumed: the same meeting grows; its notes are rewritten below.
+        Some(id) => {
+            core.store.update_meeting_recording(id, secs, &transcript, &mine);
+            core.store.set_meeting_notes(id, "", "");
+            id
+        }
+        None => core.store.add_meeting(&ts, secs, &transcript, &mine),
+    };
     log::log(format!("meeting saved: {:.0} min, {} lines", secs / 60.0, segs.len()));
     let _ = core.app.emit("meetings-changed", ());
     let c = core.clone();
@@ -1225,7 +1252,9 @@ fn write_meeting_notes(core: &Core, id: i64, live: Option<meeting::LiveNotes>) {
     let t = Instant::now();
     let notes = meeting::write_notes(core, &segs, live, &m.my_notes);
     let (title, notes) = match notes {
-        Ok(n) => {
+        Ok((n, parts, until)) => {
+            // Kept so Resume only needs notes for the new stretch.
+            core.store.set_meeting_parts(id, &serde_json::json!({ "parts": parts, "until": until }).to_string());
             let title = n.lines().find_map(|l| l.strip_prefix("# ")).unwrap_or("Meeting").trim().to_string();
             let body = n.lines().filter(|l| !l.starts_with("# ")).collect::<Vec<_>>().join("\n").trim().to_string();
             (title, body)
@@ -1241,6 +1270,8 @@ fn write_meeting_notes(core: &Core, id: i64, live: Option<meeting::LiveNotes>) {
 struct MeetingStatus {
     running: bool,
     secs: f64,
+    /// Title of the meeting being continued (Resume), else empty.
+    resuming: String,
     segments: Vec<meeting::Segment>,
     my_notes: String,
 }
@@ -1250,11 +1281,12 @@ fn meeting_status(core: CoreState) -> MeetingStatus {
     match core.meeting.lock().as_ref() {
         Some(m) => MeetingStatus {
             running: true,
-            secs: m.started.elapsed().as_secs_f64(),
+            secs: m.offset as f64 + m.started.elapsed().as_secs_f64(),
+            resuming: m.resume_id.and_then(|id| core.store.meeting(id)).map(|x| x.title).unwrap_or_default(),
             segments: m.segments.lock().clone(),
             my_notes: m.my_notes.lock().clone(),
         },
-        None => MeetingStatus { running: false, secs: 0.0, segments: Vec::new(), my_notes: String::new() },
+        None => MeetingStatus { running: false, secs: 0.0, resuming: String::new(), segments: Vec::new(), my_notes: String::new() },
     }
 }
 
@@ -1537,7 +1569,7 @@ fn tauri_main() {
             meeting_start, meeting_stop, meeting_status, meetings_list, meeting_get, meeting_delete, meeting_renotes,
             meeting_set_my_notes, meeting_save_notes, meeting_ask, meeting_clear_chat,
             call_start, call_dismiss, call_hide, call_open, call_apps, local_hotkey,
-            app_version, update_status, update_check, update_install
+            app_version, update_status, update_check, update_install, meeting_resume
         ])
         .setup(|app| {
             let mut settings = Settings::load();
@@ -1621,13 +1653,21 @@ fn tauri_main() {
                             s if s.starts_with("call-on:") => *detect::TEST_ACTIVE.lock() = Some(s[8..].to_string()),
                             "call-start" => log::log(format!("test call start: {:?}", call_start_now(&c))),
                             "show" => show_main(&c.app),
+                            s if s.starts_with("say:") => {
+                                // Add a transcript line to the running meeting, as if it was just heard: "say:Them|text".
+                                if let Some(m) = c.meeting.lock().as_ref() {
+                                    let (who, text) = s[4..].split_once('|').unwrap_or(("Them", &s[4..]));
+                                    let at = m.offset + m.started.elapsed().as_secs_f32();
+                                    m.segments.lock().push(meeting::Segment { who: who.into(), start: at, end: at + 3.0, text: text.into() });
+                                }
+                            }
                             s if s.starts_with("livenotes:") => {
                                 // As if during a meeting: earlier stretches done first, then time only what's left at the end.
                                 let path = s[10..].to_string();
                                 let segs: Vec<meeting::Segment> = std::fs::read_to_string(&path).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
                                 let live = meeting::simulate_live(&c, &segs);
                                 let t = Instant::now();
-                                let text = match meeting::write_notes(&c, &segs, Some(live), "") { Ok(n) => n, Err(e) => format!("ERROR {e}") };
+                                let text = match meeting::write_notes(&c, &segs, Some(live), "") { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
                                 let _ = std::fs::write(format!("{path}.live.md"), &text);
                                 log::log(format!("test livenotes: end-of-meeting wait {:.1}s", t.elapsed().as_secs_f32()));
                             }
@@ -1636,7 +1676,7 @@ fn tauri_main() {
                                 let path = s[6..].to_string();
                                 let segs: Vec<meeting::Segment> = std::fs::read_to_string(&path).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
                                 let t = Instant::now();
-                                let text = match meeting::write_notes(&c, &segs, None, "") { Ok(n) => n, Err(e) => format!("ERROR {e}") };
+                                let text = match meeting::write_notes(&c, &segs, None, "") { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
                                 let _ = std::fs::write(format!("{path}.notes.md"), &text);
                                 log::log(format!("test notes: {} lines in {:.1}s", segs.len(), t.elapsed().as_secs_f32()));
                             }

@@ -53,6 +53,7 @@ let meetingStarted = 0;
 export function mockInvoke(cmd: string, args: any): any {
   switch (cmd) {
     case "meeting_start": meetingOn = true; meetingStarted = Date.now(); return;
+    case "meeting_resume": meetingOn = true; meetingStarted = Date.now() - 1860_000; return;
     case "meeting_stop": meetingOn = false; return 2;
     case "meeting_status": return { running: meetingOn, secs: (Date.now() - meetingStarted) / 1000, segments: meetingOn ? meetingSegs : [], my_notes: "" };
     case "meeting_ask": return [...JSON.parse(meetings[0].chat), { role: "you", text: args.question }, { role: "ai", text: "Mock answer: Sam sends the proposal by Friday." }];

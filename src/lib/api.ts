@@ -59,7 +59,7 @@ export type Segment = { who: "You" | "Them"; start: number; text: string };
 /** In the list, transcript and notes are empty. 	itle is empty while the notes are being written. */
 export type Meeting = { id: number; ts: string; secs: number; title: string; transcript: string; notes: string; my_notes: string; chat: string };
 export type ChatTurn = { role: "you" | "ai"; text: string; edited?: boolean };
-export type MeetingStatus = { running: boolean; secs: number; segments: Segment[]; my_notes: string };
+export type MeetingStatus = { running: boolean; secs: number; segments: Segment[]; my_notes: string; resuming?: string };
 
 export type Pack = "full" | "light" | "speech";
 export type SetupItem = { id: string; name: string; size_mb: number; state: "ready" | "missing"; path: string };
@@ -109,6 +109,7 @@ export const api = {
   fixCancel: () => invoke<void>("fix_cancel"),
   meetingStart: () => invoke<void>("meeting_start"),
   meetingStop: () => invoke<number | null>("meeting_stop"),
+  meetingResume: (id: number) => invoke<void>("meeting_resume", { id }),
   meetingStatus: () => invoke<MeetingStatus>("meeting_status"),
   meetingsList: () => invoke<Meeting[]>("meetings_list"),
   meetingGet: (id: number) => invoke<Meeting | null>("meeting_get", { id }),

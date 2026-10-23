@@ -29,6 +29,22 @@ pub struct Meeting {
     running: Arc<AtomicBool>,
     worker: std::thread::JoinHandle<()>,
     live: LiveNotes,
+    /// Set when this continues an earlier meeting (Resume): its id and where its clock stopped.
+    pub resume_id: Option<i64>,
+    pub offset: f32,
+    /// The earlier session's transcript (a resumed meeting adds to it).
+    prev: Vec<Segment>,
+}
+
+/// What a resumed meeting continues from.
+pub struct Resume {
+    pub id: i64,
+    pub offset: f32,
+    pub segments: Vec<Segment>,
+    pub my_notes: String,
+    /// Part notes saved with the meeting, and the meeting time they cover.
+    pub parts: Vec<String>,
+    pub until: f32,
 }
 
 /// Notes for long meetings are written in ~10-minute stretches while the meeting is still going,
@@ -66,11 +82,11 @@ struct Track {
 
 impl Track {
     /// wav: where to save the audio, or None to keep nothing but the transcript (the default).
-    fn open(who: &'static str, device: &str, wav: Option<std::path::PathBuf>) -> anyhow::Result<Self> {
+    fn open(who: &'static str, device: &str, wav: Option<std::path::PathBuf>, offset: f32) -> anyhow::Result<Self> {
         let rec = audio::start(device)?;
         let spec = hound::WavSpec { channels: 1, sample_rate: audio::RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
         let wav = wav.and_then(|p| hound::WavWriter::create(p, spec).ok());
-        Ok(Self { who, rec: Some(rec), pending: Vec::new(), pending_start: 0.0, wav })
+        Ok(Self { who, rec: Some(rec), pending: Vec::new(), pending_start: offset, wav })
     }
 
     fn take(&mut self, new: Vec<f32>) {
@@ -144,7 +160,8 @@ fn is_echo(seg: &Segment, others: &[Segment]) -> bool {
         && them().filter(|o| (o.start - seg.start).abs() < 15.0).any(|o| mine.intersection(&words(&o.text)).count() * 2 >= mine.len())
 }
 impl Meeting {
-    pub fn start(core: Arc<Core>) -> anyhow::Result<Self> {
+    pub fn start(core: Arc<Core>, resume: Option<Resume>) -> anyhow::Result<Self> {
+        let offset = resume.as_ref().map_or(0.0, |r| r.offset);
         let stamp = chrono::Local::now();
         let name = stamp.format("%Y%m%d-%H%M%S").to_string();
         let (mic_dev, keep) = {
@@ -157,17 +174,17 @@ impl Meeting {
             std::fs::create_dir_all(&dir)?;
         }
         let wav = |suffix: &str| keep.then(|| dir.join(format!("{name}-{suffix}.wav")));
-        let mut tracks = vec![Track::open("You", &mic_dev, wav("you"))?];
+        let mut tracks = vec![Track::open("You", &mic_dev, wav("you"), offset)?];
         // The call may play on any output (speakers, headset, dock), so listen to every one of them.
         // Silent ones cost nothing: quiet chunks are never transcribed.
         for (i, out) in audio::output_devices().iter().enumerate() {
-            match Track::open("Them", &format!("{}:{out}", audio::SYSTEM), wav(&format!("them{i}"))) {
+            match Track::open("Them", &format!("{}:{out}", audio::SYSTEM), wav(&format!("them{i}")), offset) {
                 Ok(t) => tracks.push(t),
                 Err(e) => log::log(format!("meeting: can't record '{out}' ({e})")),
             }
         }
         if tracks.len() == 1 {
-            match Track::open("Them", audio::SYSTEM, wav("them")) {
+            match Track::open("Them", audio::SYSTEM, wav("them"), offset) {
                 Ok(t) => tracks.push(t),
                 Err(e) => log::log(format!("meeting: system audio unavailable ({e}); recording the mic only")),
             }
@@ -210,18 +227,24 @@ impl Meeting {
             }
         });
         let started = Instant::now();
-        let (parts, done_until) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(0.0f32)));
+        let (resume_id, prev, mine, old_parts, until0) = match resume {
+            Some(r) => (Some(r.id), r.segments, r.my_notes, r.parts, r.until),
+            None => (None, Vec::new(), String::new(), Vec::new(), 0.0),
+        };
+        let (parts, done_until) = (Arc::new(Mutex::new(old_parts)), Arc::new(Mutex::new(until0)));
         let handle = {
-            let (segs, run, parts, until) = (segments.clone(), running.clone(), parts.clone(), done_until.clone());
+            let (segs, run, parts, until, prev) = (segments.clone(), running.clone(), parts.clone(), done_until.clone(), prev.clone());
             std::thread::spawn(move || {
                 while run.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_secs(10));
                     let from = *until.lock();
                     // A minute of slack so the stretch's last sentences are transcribed first.
-                    if started.elapsed().as_secs_f32() < from + WINDOW_SECS + 60.0 || !run.load(Ordering::SeqCst) {
+                    if offset + started.elapsed().as_secs_f32() < from + WINDOW_SECS + 60.0 || !run.load(Ordering::SeqCst) {
                         continue;
                     }
-                    let chunk = window(&segs.lock(), from, from + WINDOW_SECS);
+                    // Earlier session (if resumed) + what's been said now: stretches not covered yet get notes.
+                    let all: Vec<Segment> = prev.iter().cloned().chain(segs.lock().iter().cloned()).collect();
+                    let chunk = window(&all, from, from + WINDOW_SECS);
                     if !chunk.is_empty() {
                         let t = Instant::now();
                         let user = core_notes.settings.read().user_name.clone();
@@ -243,14 +266,15 @@ impl Meeting {
             })
         };
         let live = LiveNotes { parts, done_until, handle: Some(handle) };
-        Ok(Self { started, ts: stamp.to_rfc3339(), segments, my_notes: Mutex::new(String::new()), running, worker, live })
+        Ok(Self { started, ts: stamp.to_rfc3339(), segments, my_notes: Mutex::new(mine), running, worker, live, resume_id, offset, prev })
     }
 
     /// Stops recording; returns the full transcript in time order, and the notes written so far.
     pub fn stop(self) -> (Vec<Segment>, LiveNotes) {
         self.running.store(false, Ordering::SeqCst);
         let _ = self.worker.join();
-        let segs = self.segments.lock().clone();
+        // A resumed meeting: the earlier transcript plus what was said now.
+        let segs: Vec<Segment> = self.prev.iter().cloned().chain(self.segments.lock().iter().cloned()).collect();
         // Live, a "You" line can arrive before the "Them" line it echoes: check again with everything.
         let mut kept: Vec<Segment> = segs.iter().filter(|s| s.who != "You" || !is_echo(s, &segs)).cloned().collect();
         kept.sort_by(|a, b| a.start.total_cmp(&b.start));
@@ -261,7 +285,9 @@ impl Meeting {
 /// The finished notes: short meetings in one pass; long ones from the part notes written during the
 /// meeting (live) plus notes for whatever is left, merged. Without live (Rewrite) every part is
 /// written now.
-pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_notes: &str) -> anyhow::Result<String> {
+/// Returns the notes and the part notes behind them (with the meeting time they cover), which are
+/// saved so a resumed meeting can reuse them.
+pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_notes: &str) -> anyhow::Result<(String, Vec<String>, f32)> {
     let (mut parts, from) = match live {
         Some(mut l) => {
             if let Some(h) = l.handle.take() {
@@ -280,7 +306,7 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
     let llm = guard.as_mut().ok_or_else(|| anyhow::anyhow!("the writing AI isn't running"))?;
     let full = transcript_text(segs);
     if parts.is_empty() && full.chars().count() <= SINGLE_PASS_CHARS {
-        return llm.meeting_single(&full, language, my_notes, &user, minutes);
+        return Ok((llm.meeting_single(&full, language, my_notes, &user, minutes)?, Vec::new(), 0.0));
     }
     let mut a = from;
     while a <= end {
@@ -292,7 +318,9 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
         a += WINDOW_SECS;
     }
     log::log(format!("meeting notes: merging {} parts", parts.len()));
-    llm.meeting_merge(&parts, language, my_notes, &user, minutes)
+    let notes = llm.meeting_merge(&parts, language, my_notes, &user, minutes)?;
+    // Covered up to where the talk actually ended, so a resumed meeting's new words start a new stretch.
+    Ok((notes, parts, end))
 }
 
 /// Test builds: the part notes a real meeting would have written while it was going (every full
