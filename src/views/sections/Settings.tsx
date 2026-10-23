@@ -107,6 +107,13 @@ export default function Settings({ settings, update, status, go }: { settings: S
         </Row>
       )}
 
+      <ToggleRow
+        title="Keep meeting recordings"
+        help="Off: like Granola, the audio is transcribed as you talk and never saved; only the transcript and notes stay. On: also saves the audio on this PC."
+        on={settings.keep_meeting_audio}
+        onChange={(v) => update("keep_meeting_audio", v)}
+      />
+
       <div className="group-label label">General</div>
       <Row title="Your name" help="Seda greets you, labels you in transcripts, and knows “Alex, can you…” in a meeting is a task for you.">
         <NameField settings={settings} update={update} />

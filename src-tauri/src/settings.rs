@@ -53,6 +53,8 @@ pub struct Settings {
     pub meeting_apps: Vec<String>,
     /// What Seda calls the user: greeting, "You" in transcripts, owner of tasks in meeting notes.
     pub user_name: String,
+    /// Save meeting audio as WAV files. Off: like Granola, audio is transcribed live and never stored.
+    pub keep_meeting_audio: bool,
 }
 
 impl Default for Settings {
@@ -80,6 +82,7 @@ impl Default for Settings {
             meeting_detect: "ask".into(),
             meeting_apps: crate::detect::APPS.iter().filter(|a| a.default_on).map(|a| a.id.to_string()).collect(),
             user_name: String::new(),
+            keep_meeting_audio: false,
         }
     }
 }

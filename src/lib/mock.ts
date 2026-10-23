@@ -24,6 +24,7 @@ let settings: Settings = {
   llm_model: "C:\\Users\\you\\.venvs\\llm\\models\\gemma-4-E4B-it-Q4_K_M.gguf",
   meeting_detect: "ask",
   user_name: "",
+  keep_meeting_audio: false,
   meeting_apps: ["teams", "zoom", "browser", "webex", "slack"],
   onboarded: !location.search.includes("setup"), // preview the setup flow with ?setup
 };

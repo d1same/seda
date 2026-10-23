@@ -40,6 +40,7 @@ export type Settings = {
   meeting_detect: "ask" | "auto" | "off";
   meeting_apps: string[];
   user_name: string;
+  keep_meeting_audio: boolean;
 };
 
 export type CallApp = { id: string; name: string; installed: boolean };

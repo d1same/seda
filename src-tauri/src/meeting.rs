@@ -44,10 +44,11 @@ struct Track {
 }
 
 impl Track {
-    fn open(who: &'static str, device: &str, wav: std::path::PathBuf) -> anyhow::Result<Self> {
+    /// wav: where to save the audio, or None to keep nothing but the transcript (the default).
+    fn open(who: &'static str, device: &str, wav: Option<std::path::PathBuf>) -> anyhow::Result<Self> {
         let rec = audio::start(device)?;
         let spec = hound::WavSpec { channels: 1, sample_rate: audio::RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
-        let wav = hound::WavWriter::create(wav, spec).ok();
+        let wav = wav.and_then(|p| hound::WavWriter::create(p, spec).ok());
         Ok(Self { who, rec: Some(rec), pending: Vec::new(), pending_start: 0.0, wav })
     }
 
@@ -121,26 +122,34 @@ fn is_echo(seg: &Segment, others: &[Segment]) -> bool {
 }
 impl Meeting {
     pub fn start(core: Arc<Core>) -> anyhow::Result<Self> {
-        let dir = crate::settings::data_dir().join("meetings");
-        std::fs::create_dir_all(&dir)?;
         let stamp = chrono::Local::now();
         let name = stamp.format("%Y%m%d-%H%M%S").to_string();
-        let mic_dev = core.settings.read().input_device.clone();
-        let mut tracks = vec![Track::open("You", &mic_dev, dir.join(format!("{name}-you.wav")))?];
-        // The call may play on any output (speakers, headset, dock), so record every one of them.
+        let (mic_dev, keep) = {
+            let s = core.settings.read();
+            (s.input_device.clone(), s.keep_meeting_audio)
+        };
+        // Audio files only when the user asked to keep recordings; normally only the transcript stays.
+        let dir = crate::settings::data_dir().join("meetings");
+        if keep {
+            std::fs::create_dir_all(&dir)?;
+        }
+        let wav = |suffix: &str| keep.then(|| dir.join(format!("{name}-{suffix}.wav")));
+        let mut tracks = vec![Track::open("You", &mic_dev, wav("you"))?];
+        // The call may play on any output (speakers, headset, dock), so listen to every one of them.
         // Silent ones cost nothing: quiet chunks are never transcribed.
         for (i, out) in audio::output_devices().iter().enumerate() {
-            match Track::open("Them", &format!("{}:{out}", audio::SYSTEM), dir.join(format!("{name}-them{i}.wav"))) {
+            match Track::open("Them", &format!("{}:{out}", audio::SYSTEM), wav(&format!("them{i}"))) {
                 Ok(t) => tracks.push(t),
                 Err(e) => log::log(format!("meeting: can't record '{out}' ({e})")),
             }
         }
         if tracks.len() == 1 {
-            match Track::open("Them", audio::SYSTEM, dir.join(format!("{name}-them.wav"))) {
+            match Track::open("Them", audio::SYSTEM, wav("them")) {
                 Ok(t) => tracks.push(t),
                 Err(e) => log::log(format!("meeting: system audio unavailable ({e}); recording the mic only")),
             }
-        }        let segments = Arc::new(Mutex::new(Vec::<Segment>::new()));
+        }
+        let segments = Arc::new(Mutex::new(Vec::<Segment>::new()));
         let running = Arc::new(AtomicBool::new(true));
         let (segs, run) = (segments.clone(), running.clone());
         log::log(format!("meeting started ({} tracks)", tracks.len()));

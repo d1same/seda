@@ -47,7 +47,8 @@ The installer is written to `<target-dir>/release/bundle/nsis/`. For development
 
 - Audio, transcripts, notes and settings never leave your PC. The only network traffic is the one-time model download.
 - Call detection reads Windows' own "which app is using the microphone" list; Seda records only after you press Start (or if you choose "Record automatically" in Settings).
-- Delete any dictation or meeting from the app; its audio is deleted with it.
+- Meeting audio is transcribed as you talk and never saved: only the transcript and notes stay (you can turn on "Keep meeting recordings" in Settings).
+- Delete any dictation or meeting from the app; any saved audio is deleted with it.
 
 ## License
 
