@@ -308,7 +308,9 @@ impl Core {
             // set_size finishes on the next window message, so the size we asked for may not be
             // the size on screen yet. Clip to the real window once it is a small square.
             let (px, py) = dot_pixels(w, size);
-            win::clip_circle(hwnd, dot, px, py);
+            // The icon is a rounded square. Clip to that shape so the square window corners
+            // are gone and the desktop shows through.
+            win::clip_icon(hwnd, dot, px, py);
             win::show_no_activate(hwnd);
         }
         if dot {
@@ -332,7 +334,7 @@ impl Core {
                     let Ok(h) = win.hwnd() else { return };
                     let hwnd = h.0 as isize;
                     win::round_corners(hwnd, false);
-                    win::clip_circle(hwnd, true, width, height);
+                    win::clip_icon(hwnd, true, width, height);
                 }
             });
         }
@@ -377,12 +379,12 @@ impl Core {
         // Always (re)set: it also makes the page fill the window after its frame was removed,
         // otherwise a light strip of bare window shows around the pill.
         let _ = w.set_size(tauri::LogicalSize::new(width, height));
-        // Match the page. A sliver of the default light window is the gray square in the screenshot.
+        // Alpha 0 lets the desktop show through the icon's corners. The capsule stays solid.
         let _ = w.set_background_color(Some(tauri::window::Color(
-            if dot { 0x12 } else { 0x14 },
-            if dot { 0x12 } else { 0x12 },
-            if dot { 0x12 } else { 0x10 },
-            255,
+            if dot { 0 } else { 0x14 },
+            if dot { 0 } else { 0x12 },
+            if dot { 0 } else { 0x10 },
+            if dot { 0 } else { 255 },
         )));
         if let Ok(h) = w.hwnd() {
             win::round_corners(h.0 as isize, !dot);

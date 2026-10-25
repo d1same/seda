@@ -280,17 +280,21 @@ pub fn make_overlay(hwnd: isize, click_through: bool) {
     }
 }
 
-/// Clip the pill window to a circle of `px` by `py` physical pixels, or restore the full rectangle.
+/// Clip the pill window to the Seda icon's rounded square, or restore the full rectangle.
+/// The corner radius matches `seda-icon.svg` (229.9 on a 1024 canvas), so the corners outside
+/// the icon are not part of the window and the desktop shows through.
 /// The region is applied only after the window has a real size: an empty clip hides a WebView.
-pub fn clip_circle(hwnd: isize, on: bool, px: i32, py: i32) {
-    use windows::Win32::Graphics::Gdi::{CreateEllipticRgn, SetWindowRgn};
+pub fn clip_icon(hwnd: isize, on: bool, px: i32, py: i32) {
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
     unsafe {
         let h = HWND(hwnd as _);
         if !on || px < 8 || py < 8 {
             let _ = SetWindowRgn(h, None, true);
             return;
         }
-        let rgn = CreateEllipticRgn(0, 0, px, py);
+        let radius = ((px.min(py) as f64) * (229.9 / 1024.0)).round() as i32;
+        let curve = (radius * 2).max(2);
+        let rgn = CreateRoundRectRgn(0, 0, px, py, curve, curve);
         if rgn.is_invalid() {
             return;
         }
@@ -303,8 +307,8 @@ pub fn clip_circle(hwnd: isize, on: bool, px: i32, py: i32) {
     }
 }
 
-/// Native rounded corners (Windows 11) for the status capsule. The idle circle turns them off:
-/// a rounded-corner preference is a light rounded square, not a disc. The disc is `clip_circle`.
+/// Native rounded corners (Windows 11) for the status capsule. The desktop icon turns them off:
+/// that preference draws a light frame. The icon shape is `clip_icon`.
 pub fn round_corners(hwnd: isize, round: bool) {
     use windows::Win32::Graphics::Dwm::{
         DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DwmSetWindowAttribute,

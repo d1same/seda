@@ -111,6 +111,18 @@ export default function Pill() {
   const showText = s === "done" || s === "empty" || s === "error" || s === "cancelled";
   const lamp = s === "listening" ? "rec" : working ? "work" : s === "done" ? "ok" : s === "error" ? "err" : "idle";
   const shape = st.shape ?? (s === "idle" ? "dot" : "pill");
+  const dotShape = shape === "dot" && (s === "idle" || s === "listening");
+
+  // The desktop icon's corners are clear. The browser preview paints a stand-in desktop
+  // behind them; the real window leaves them transparent.
+  useEffect(() => {
+    const bg = !dotShape ? "" : inTauri ? "transparent" : "linear-gradient(160deg, #9bb8d4, #e7edf2 42%, #d5ddd0)";
+    for (const el of [document.documentElement, document.body, document.getElementById("root")]) {
+      if (!el) continue;
+      if (bg) el.style.setProperty("background", bg, "important");
+      else el.style.removeProperty("background");
+    }
+  }, [dotShape]);
 
   function toggleDot() {
     if (inTauri) {
@@ -222,7 +234,7 @@ function IdleCircle({ listening, secs, onToggle }: { listening: boolean; secs: n
         onToggle();
       }}
     >
-      <Logo size={listening ? 28 : 52} dot={listening ? "#ff4b2b" : "#ff1f26"} pulse={listening} outline={false} plate={false} />
+      <Logo dot={listening ? "#ff4b2b" : "#ff1f26"} pulse={listening} outline={false} fill />
       {listening && <span className="idle-time">{fmt(secs)}</span>}
     </button>
   );
