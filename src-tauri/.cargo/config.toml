@@ -1,6 +1,6 @@
 # Build settings for Windows. Adjust the paths below to where these tools are installed on your PC.
 [build]
-target-dir = "C:/s"  # short: the Vulkan shader build hits Windows' 260-character path limit otherwise
+target-dir = "Z:/Projects/Whisper/build"  # on the project drive; kept out of the source folder
 
 [env]
 VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"

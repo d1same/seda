@@ -17,6 +17,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
+if ($root -like "C:\*") { throw "Run this from Z:\Projects\Whisper\seda. Do not build a copy on C:." }
 $key = Join-Path $env:USERPROFILE ".tauri\seda-updater.key"
 if (-not (Test-Path $key)) { throw "Signing key not found at $key" }
 
