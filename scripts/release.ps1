@@ -1,6 +1,7 @@
 # Build, sign and publish a Seda release to GitHub (d1same/seda).
 #
 #   ./scripts/release.ps1 -Version 0.1.3 -Notes notes.md
+#   ./scripts/release.ps1 -CleanupOnly
 #
 # Needs: the update signing key at $env:USERPROFILE\.tauri\seda-updater.key (never commit it; back it
 # up somewhere safe: without it, installed copies can't be updated), the GitHub CLI logged in, and the
@@ -8,16 +9,34 @@
 #
 # Publishes the installer plus latest.json, which installed copies of Seda read to find updates.
 param(
-    [Parameter(Mandatory)] [string] $Version,
-    [Parameter(Mandatory)] [string] $Notes,
+    [string] $Version,
+    [string] $Notes,
     [string] $Repo = "d1same/seda",
     [switch] $Prerelease,   # test releases: not picked up by /releases/latest
     [string] $Tag = "v$Version",
-    [string] $Features = ""  # e.g. "test-hooks" for test builds only
+    [string] $Features = "",  # e.g. "test-hooks" for test builds only
+    [switch] $CleanupOnly    # only delete leftover folders, then stop
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
-if ($root -like "C:\*") { throw "Run this from Z:\Projects\Whisper\seda. Do not build a copy on C:." }
+$full = [IO.Path]::GetFullPath($root).TrimEnd('\')
+$onSeda = ($full -eq "Z:\Projects\Whisper\seda") -or ($full -eq "\\10.1.20.4\Ai Projects\Projects\Whisper\seda")
+if (-not $onSeda) { throw "Run this from Z:\Projects\Whisper\seda. This copy is $full." }
+
+# Leftovers from earlier copies. Z:\b stays: the speech-model build breaks in a longer folder.
+# The installer shelf Z:\Projects\Whisper\installer stays too.
+function Remove-OldFolder([string] $dir) {
+    if (-not (Test-Path -LiteralPath $dir)) { return }
+    cmd /c "attrib -r `"$dir`" /s /d & rmdir /s /q `"$dir`"" | Out-Null
+    if (Test-Path -LiteralPath $dir) { Write-Host "Could not remove $dir. Close anything using it and delete that folder by hand." }
+    else { Write-Host "Removed old folder $dir" }
+}
+Remove-OldFolder "C:\seda"
+Remove-OldFolder "C:\s"
+Remove-OldFolder "Z:\Projects\Whisper\build"
+if ($CleanupOnly) { return }
+if (-not $Version -or -not $Notes) { throw "Pass -Version and -Notes." }
+
 $key = Join-Path $env:USERPROFILE ".tauri\seda-updater.key"
 if (-not (Test-Path $key)) { throw "Signing key not found at $key" }
 
