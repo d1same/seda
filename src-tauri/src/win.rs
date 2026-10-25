@@ -330,15 +330,15 @@ pub fn round_corners(hwnd: isize, round: bool) {
 /// The idle icon's clear corners turn white while Windows paints this window in dark mode.
 /// The mark is already dark, so the frame stays light and the desktop shows through.
 pub fn clear_dark_corners(hwnd: isize) {
-    use windows::Win32::Foundation::BOOL;
     use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
     unsafe {
-        let light = BOOL(0);
+        // A Windows BOOL is 4 bytes. This crate no longer exports that type.
+        let light: i32 = 0;
         let _ = DwmSetWindowAttribute(
             HWND(hwnd as _),
             DWMWA_USE_IMMERSIVE_DARK_MODE,
-            &light as *const BOOL as *const std::ffi::c_void,
-            std::mem::size_of::<BOOL>() as u32,
+            &light as *const i32 as *const std::ffi::c_void,
+            4,
         );
     }
 }
