@@ -21,8 +21,8 @@ html.view-pill:has(.pill-stage.dot) #root { background: transparent !important; 
   position: relative;
   width: 100%;
   height: 100%;
-  max-width: 56px;
-  max-height: 56px;
+  max-width: 48px;
+  max-height: 48px;
   aspect-ratio: 1;
   border: 0;
   border-radius: 0;
@@ -39,9 +39,10 @@ html.view-pill:has(.pill-stage.dot) #root { background: transparent !important; 
 .idle-dot > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .idle-dot:active { cursor: grabbing; }
 .idle-time {
-  position: absolute; left: 0; right: 0; top: 6px; z-index: 1;
-  font: 500 9px/1 "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums;
-  color: #f3c08a; text-align: center; pointer-events: none;
+  position: absolute; left: 0; right: 0; bottom: 5px; z-index: 1;
+  font: 500 8px/1 "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums;
+  color: #fff; text-align: center; pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
 }
 .pill-logo { display: flex; flex: none; }
 .logo-pulse { animation: tally 1.1s ease-in-out infinite; }

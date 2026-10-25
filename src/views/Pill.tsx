@@ -133,7 +133,7 @@ export default function Pill() {
     setSt((cur) =>
       cur.state === "listening"
         ? { state: "idle", app: "", message: "", shape: "dot" }
-        : { state: "listening", app: "", message: "", shape: "dot" },
+        : { state: "listening", app: "Outlook", message: "", shape: "pill" },
     );
   }
 
@@ -234,7 +234,7 @@ function IdleCircle({ listening, secs, onToggle }: { listening: boolean; secs: n
         onToggle();
       }}
     >
-      <Logo dot={listening ? "#ff4b2b" : "#ff1f26"} pulse={listening} outline={false} fill />
+      <Logo dot="#ff1f26" outline={false} fill plateOpacity={0.84} radius={360} />
       {listening && <span className="idle-time">{fmt(secs)}</span>}
     </button>
   );

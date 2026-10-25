@@ -77,21 +77,7 @@ struct CallState {
 /// Pop-up sizes (logical px): working capsule, capsule with a message, idle circle.
 const PILL: (f64, f64) = (148.0, 30.0);
 const PILL_WIDE: (f64, f64) = (300.0, 30.0);
-const PILL_IDLE: (f64, f64) = (56.0, 56.0);
-
-/// Physical pixels of the circle. Prefer the window's real size once it is a small square,
-/// because a clip taken from the size we just requested is wrong until that resize lands.
-fn dot_pixels(w: &tauri::WebviewWindow, size: (f64, f64)) -> (i32, i32) {
-    if let Ok(outer) = w.outer_size() {
-        let width = outer.width as i32;
-        let height = outer.height as i32;
-        if small_square(width, height) {
-            return (width, height);
-        }
-    }
-    let scale = w.scale_factor().unwrap_or(1.0);
-    ((size.0 * scale).round() as i32, (size.1 * scale).round() as i32)
-}
+const PILL_IDLE: (f64, f64) = (48.0, 48.0);
 
 /// The idle circle is a small square. The status capsule is a wide short bar, so a late clip
 /// can tell them apart and will not turn the capsule into a disc.
@@ -242,12 +228,11 @@ impl Core {
             "transcribing" | "polishing" => self.set_tray("busy"),
             _ => self.tray_idle(),
         }
-        // A dictation started from the circle keeps that circle (so a second click can stop it).
-        // The shortcut still uses the wide status capsule.
-        let dot = state == "listening" && self.from_dot.load(Ordering::SeqCst);
-        let _ = self.app.emit_to("pill", "pill", PillState { state, app: app.to_string(), message, shape: if dot { "dot" } else { "pill" } });
+        // A click on the desktop icon starts the same capsule the shortcut uses.
+        // from_dot only remembers that the click started it, so the shortcut can still stop it.
+        let _ = self.app.emit_to("pill", "pill", PillState { state, app: app.to_string(), message, shape: "pill" });
         if let Some(w) = self.app.get_webview_window("pill") {
-            self.present_pill(&w, state, dot);
+            self.present_pill(&w, state, false);
         }
         let linger = match state {
             "done" => Some(1600),
@@ -307,10 +292,9 @@ impl Core {
             win::make_overlay(hwnd, !dot);
             // set_size finishes on the next window message, so the size we asked for may not be
             // the size on screen yet. Clip to the real window once it is a small square.
-            let (px, py) = dot_pixels(w, size);
-            // The icon is a rounded square. Clip to that shape so the square window corners
-            // are gone and the desktop shows through.
-            win::clip_icon(hwnd, dot, px, py);
+            // No hard window outline. A GDI clip is a jagged edge; the icon's own
+            // anti-aliased corners are what should show, with the desktop in the rest.
+            win::clip_icon(hwnd, false, 0, 0);
             win::show_no_activate(hwnd);
         }
         if dot {
@@ -334,7 +318,7 @@ impl Core {
                     let Ok(h) = win.hwnd() else { return };
                     let hwnd = h.0 as isize;
                     win::round_corners(hwnd, false);
-                    win::clip_icon(hwnd, true, width, height);
+                    win::clip_icon(hwnd, false, 0, 0);
                 }
             });
         }
@@ -455,7 +439,7 @@ impl Core {
         }
     }
 
-    /// Click on the circle: start dictation, or stop it if this circle already started it.
+    /// Click on the desktop icon: start the regular dictation capsule, or stop one this icon started.
     fn dot_click(self: &Arc<Self>) {
         log::log("dot click");
         if self.rec.lock().is_some() {
@@ -846,7 +830,7 @@ fn local_hotkey(window: tauri::WebviewWindow, event: String) -> Result<(), Strin
     Ok(())
 }
 
-/// Click the on-screen circle: start dictation, or stop a dictation that circle started.
+/// Click the on-screen icon: start the regular dictation capsule, or stop one that icon started.
 #[tauri::command]
 fn dot_click(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
     only(&window, "pill")?;
