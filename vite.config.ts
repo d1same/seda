@@ -1,11 +1,12 @@
+import "./scripts/windows-drive.mjs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
-// Keep this project on a local disk: on a network share whose name contains a space, Vite
-// mis-resolves the path and serves 404 for everything.
+// The project lives on Z:, whose share name is "Ai Projects". Vite splits that
+// path on the space unless scripts/windows-drive.mjs rewrites it first.
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
