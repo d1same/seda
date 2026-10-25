@@ -1,6 +1,6 @@
 # Build settings for Windows. Adjust the paths below to where these tools are installed on your PC.
 [build]
-target-dir = "Z:/Projects/Whisper/build"  # on the project drive; kept out of the source folder
+target-dir = "Z:/b"  # short on purpose: the speech-model build exceeds Windows' 260-character path limit otherwise
 
 [env]
 VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"
