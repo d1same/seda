@@ -29,7 +29,7 @@ function runDemo(): () => void {
   return () => timers.forEach(clearTimeout);
 }
 
-type PillState = { state: string; app: string; message: string; shape?: string };
+type PillState = { state: string; app: string; message: string; shape?: string; click_stop?: boolean };
 const BARS = 16;
 
 let audioCtx: AudioContext | null = null;
@@ -133,7 +133,7 @@ export default function Pill() {
     setSt((cur) =>
       cur.state === "listening"
         ? { state: "idle", app: "", message: "", shape: "dot" }
-        : { state: "listening", app: "Outlook", message: "", shape: "pill" },
+        : { state: "listening", app: "Outlook", message: "", shape: "pill", click_stop: true },
     );
   }
 
@@ -145,11 +145,28 @@ export default function Pill() {
     );
   }
 
+  function stopCapsule() {
+    if (inTauri) {
+      api.dotClick().catch(() => {});
+      return;
+    }
+    setSecs(0);
+    setSt({ state: "idle", app: "", message: "", shape: "dot", click_stop: false });
+  }
+
   const DOT: Record<string, string> = { rec: "#ff4b2b", work: "#f0a73a", ok: "#3ddc5c", err: "#ff4b2b", idle: "#8a8478" };
+  const stoppable = s === "listening" && !!st.click_stop;
 
   return (
     <div className={`pill-stage ${s === "hidden" ? "out" : "in"}`}>
-      <div className={`pill ${s}`}>
+      <div
+        className={`pill ${s}${stoppable ? " stoppable" : ""}`}
+        role={stoppable ? "button" : undefined}
+        tabIndex={stoppable ? 0 : undefined}
+        aria-label={stoppable ? "Stop and paste" : undefined}
+        onClick={stoppable ? stopCapsule : undefined}
+        onKeyDown={stoppable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); stopCapsule(); } } : undefined}
+      >
         <span className="pill-logo"><Logo size={18} dot={DOT[lamp]} pulse={lamp === "rec" || lamp === "work"} outline={false} /></span>
         {showText ? (
           <div className="pill-text" dir="auto" title={st.message}>
@@ -164,6 +181,7 @@ export default function Pill() {
           </div>
         )}
         {s === "listening" && <span className="pill-time">{fmt(secs)}</span>}
+        {stoppable && <span className="pill-stop" aria-hidden />}
       </div>
     </div>
   );

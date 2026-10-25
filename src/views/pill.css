@@ -56,6 +56,8 @@ html.view-pill:has(.pill-stage.dot) #root { background: transparent !important; 
 @keyframes sweep { from { left: -18px; } to { left: 100%; } }
 
 .pill-time { flex: none; font: 500 11px/1 "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; color: #a79e8d; }
+.pill.stoppable { cursor: pointer; }
+.pill-stop { flex: none; width: 10px; height: 10px; border-radius: 2px; background: #ff4b2b; }
 
 .pill-text { flex: 1; min-width: 0; font-size: 12px; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; unicode-bidi: plaintext; }
 .pill.done .pill-text { color: #8fe3a0; }

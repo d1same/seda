@@ -38,6 +38,8 @@ struct PillState {
     message: String,
     /// "dot" = the round button (click to dictate, drag to move). "pill" = the status capsule.
     shape: &'static str,
+    /// Clicking this capsule stops the recording and pastes it. Used when the desktop icon started it.
+    click_stop: bool,
 }
 
 struct ActiveRec {
@@ -229,8 +231,9 @@ impl Core {
             _ => self.tray_idle(),
         }
         // A click on the desktop icon starts the same capsule the shortcut uses.
-        // from_dot only remembers that the click started it, so the shortcut can still stop it.
-        let _ = self.app.emit_to("pill", "pill", PillState { state, app: app.to_string(), message, shape: "pill" });
+        // That capsule accepts one more click to stop and paste, because there is no key to release.
+        let click_stop = state == "listening" && self.from_dot.load(Ordering::SeqCst);
+        let _ = self.app.emit_to("pill", "pill", PillState { state, app: app.to_string(), message, shape: "pill", click_stop });
         if let Some(w) = self.app.get_webview_window("pill") {
             self.present_pill(&w, state, false);
         }
@@ -262,7 +265,7 @@ impl Core {
         let Some(w) = self.app.get_webview_window("pill") else { return };
         let dot = self.settings.read().idle_dot;
         let state = if dot { "idle" } else { "hidden" };
-        let _ = self.app.emit_to("pill", "pill", PillState { state, app: String::new(), message: String::new(), shape: "dot" });
+        let _ = self.app.emit_to("pill", "pill", PillState { state, app: String::new(), message: String::new(), shape: "dot", click_stop: false });
         if dot {
             self.present_pill(&w, "idle", true);
             return;
@@ -289,7 +292,10 @@ impl Core {
         }
         if let Ok(h) = w.hwnd() {
             let hwnd = h.0 as isize;
-            win::make_overlay(hwnd, !dot);
+            // The idle icon takes clicks. So does a capsule that the icon started, so a second
+            // click can stop and paste. A shortcut capsule stays click-through.
+            let click_stop = !dot && state == "listening" && self.from_dot.load(Ordering::SeqCst);
+            win::make_overlay(hwnd, !dot && !click_stop);
             // set_size finishes on the next window message, so the size we asked for may not be
             // the size on screen yet. Clip to the real window once it is a small square.
             // No hard window outline. A GDI clip is a jagged edge; the icon's own
