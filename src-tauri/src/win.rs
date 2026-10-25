@@ -308,7 +308,7 @@ pub fn clip_icon(hwnd: isize, on: bool, px: i32, py: i32) {
 }
 
 /// Native rounded corners (Windows 11) for the status capsule. The desktop icon turns them off:
-/// that preference draws a light frame. The icon shape is `clip_icon`.
+/// that preference draws a light frame. The icon's own anti-aliased corners are the shape.
 pub fn round_corners(hwnd: isize, round: bool) {
     use windows::Win32::Graphics::Dwm::{
         DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DwmSetWindowAttribute,
@@ -324,6 +324,22 @@ pub fn round_corners(hwnd: isize, round: bool) {
         // No 1px light window border around the pill (DWMWA_COLOR_NONE).
         let none: u32 = 0xFFFF_FFFE;
         let _ = DwmSetWindowAttribute(HWND(hwnd as _), DWMWA_BORDER_COLOR, &none as *const _ as *const std::ffi::c_void, 4);
+    }
+}
+
+/// The idle icon's clear corners turn white while Windows paints this window in dark mode.
+/// The mark is already dark, so the frame stays light and the desktop shows through.
+pub fn clear_dark_corners(hwnd: isize) {
+    use windows::Win32::Foundation::BOOL;
+    use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+    unsafe {
+        let light = BOOL(0);
+        let _ = DwmSetWindowAttribute(
+            HWND(hwnd as _),
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &light as *const BOOL as *const std::ffi::c_void,
+            std::mem::size_of::<BOOL>() as u32,
+        );
     }
 }
 

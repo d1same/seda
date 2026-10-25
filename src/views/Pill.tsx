@@ -117,6 +117,7 @@ export default function Pill() {
   // behind them; the real window leaves them transparent.
   useEffect(() => {
     const bg = !dotShape ? "" : inTauri ? "transparent" : "linear-gradient(160deg, #9bb8d4, #e7edf2 42%, #d5ddd0)";
+    document.documentElement.style.setProperty("color-scheme", "only light", "important");
     for (const el of [document.documentElement, document.body, document.getElementById("root")]) {
       if (!el) continue;
       if (bg) el.style.setProperty("background", bg, "important");

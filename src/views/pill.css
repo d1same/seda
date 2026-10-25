@@ -1,6 +1,10 @@
 /* The status capsule is a solid window with native rounded corners.
    The desktop icon is the Seda mark on a clear window: the corners outside the icon show the desktop. */
 /* Scoped to the pill window: every CSS file ships in one bundle, so an unscoped rule would paint the main window dark too. */
+/* WebView2 fills a transparent page with white when this document follows the dark system theme.
+   The capsule and the icon already set their own colors, so this window stays on the light scheme
+   and the icon's corners stay clear on a dark desktop. `only` stops the browser overriding it. */
+html.view-pill { color-scheme: only light !important; color: #efe7d8; }
 html.view-pill, html.view-pill body, html.view-pill #root { background: #141210 !important; overflow: hidden; margin: 0; }
 html.view-pill:has(.pill-stage.dot),
 html.view-pill:has(.pill-stage.dot) body,

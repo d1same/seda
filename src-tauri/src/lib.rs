@@ -324,6 +324,7 @@ impl Core {
                     let Ok(h) = win.hwnd() else { return };
                     let hwnd = h.0 as isize;
                     win::round_corners(hwnd, false);
+                    win::clear_dark_corners(hwnd);
                     win::clip_icon(hwnd, false, 0, 0);
                 }
             });
@@ -356,9 +357,9 @@ impl Core {
         })
     }
 
-    /// The pill window is a plain, solid window exactly the size of what it shows (the capsule, or
-    /// the idle circle). The capsule gets native rounded corners. The circle does not: those
-    /// corners are a light rounded square, and the disc is clipped on top instead.
+    /// The pill window is a plain window exactly the size of what it shows (the capsule, or the
+    /// idle icon). The capsule gets native rounded corners. The icon does not, and it leaves
+    /// dark mode, so the corners outside the mark stay clear instead of turning white.
     /// Returns true when the size changed (the caller then re-centres it).
     fn shape_pill(&self, w: &tauri::WebviewWindow, (width, height): (f64, f64), dot: bool) -> bool {
         let changed = w
@@ -377,7 +378,11 @@ impl Core {
             if dot { 0 } else { 255 },
         )));
         if let Ok(h) = w.hwnd() {
-            win::round_corners(h.0 as isize, !dot);
+            let hwnd = h.0 as isize;
+            win::round_corners(hwnd, !dot);
+            if dot {
+                win::clear_dark_corners(hwnd);
+            }
         }
         changed
     }
