@@ -308,10 +308,11 @@ impl Core {
     fn point_on_screen(&self, x: i32, y: i32) -> bool {
         let Ok(monitors) = self.app.available_monitors() else { return false };
         monitors.into_iter().any(|m| {
-            let a = m.work_area();
-            let (px, py) = (a.position.x, a.position.y);
-            let (pw, ph) = (a.size.width as i32, a.size.height as i32);
-            x > px - 200 && y > py - 200 && x < px + pw && y < py + ph
+            // Full screen, not the work area: the taskbar is a normal place to leave the circle.
+            // 200px of slack keeps a circle that hangs off an edge.
+            let p = m.position();
+            let s = m.size();
+            x > p.x - 200 && y > p.y - 200 && x < p.x + s.width as i32 + 200 && y < p.y + s.height as i32 + 200
         })
     }
 

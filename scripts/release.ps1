@@ -24,6 +24,15 @@ foreach ($f in "package.json", "src-tauri\tauri.conf.json") {
     if (-not (Select-String -Path (Join-Path $root $f) -Pattern "`"version`": `"$Version`"" -Quiet)) { throw "$f is not at version $Version" }
 }
 
+# The Windows build needs the Microsoft linker. A GNU Rust toolchain calls dlltool.exe and stops.
+if (-not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
+    $vs = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1"
+    if (Test-Path -LiteralPath $vs) { & $vs -Arch amd64 }
+}
+rustup toolchain install stable-x86_64-pc-windows-msvc
+if ($LASTEXITCODE) { throw "Microsoft Rust toolchain is not installed" }
+$env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
+
 # Signed build. Path remapping keeps this PC's folder names out of the program file.
 $env:TAURI_SIGNING_PRIVATE_KEY = $key
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
@@ -56,3 +65,10 @@ if ($Prerelease) { $ghArgs += "--prerelease" }
 & gh @ghArgs
 if ($LASTEXITCODE) { throw "publishing failed" }
 Write-Host "Published $Tag"
+
+# Keep a copy next to the older installers when that folder is on this PC.
+$shelf = "Z:\Projects\Whisper\installer"
+if (Test-Path -LiteralPath $shelf) {
+    Copy-Item -LiteralPath $installer -Destination (Join-Path $shelf "Seda_${Version}_x64-setup.exe") -Force
+    Write-Host "Saved installer to $shelf"
+}
