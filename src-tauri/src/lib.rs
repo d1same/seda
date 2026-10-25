@@ -33,9 +33,11 @@ pub struct Status {
 
 #[derive(Serialize, Clone)]
 struct PillState {
-    state: &'static str, // listening | transcribing | polishing | done | empty | error | cancelled
+    state: &'static str, // listening | transcribing | polishing | done | empty | error | cancelled | idle | hidden
     app: String,
     message: String,
+    /// "dot" = the round button (click to dictate, drag to move). "pill" = the status capsule.
+    shape: &'static str,
 }
 
 struct ActiveRec {
@@ -72,10 +74,10 @@ struct CallState {
     gone_since: Option<Instant>,
 }
 
-/// Pop-up sizes (logical px): working capsule, capsule with a message, idle logo.
+/// Pop-up sizes (logical px): working capsule, capsule with a message, idle circle.
 const PILL: (f64, f64) = (148.0, 30.0);
 const PILL_WIDE: (f64, f64) = (300.0, 30.0);
-const PILL_IDLE: (f64, f64) = (22.0, 22.0);
+const PILL_IDLE: (f64, f64) = (72.0, 72.0);
 
 pub struct Core {
     app: AppHandle,
@@ -87,6 +89,8 @@ pub struct Core {
     rec: Mutex<Option<ActiveRec>>,
     recording: Arc<AtomicBool>,
     pill_gen: AtomicU64,
+    /// This dictation was started from the on-screen circle, so the circle stays put and a second click stops it.
+    from_dot: AtomicBool,
     fix: Mutex<Option<FixSession>>,
     mic_test: Mutex<Option<audio::Recording>>,
     meeting: Mutex<Option<meeting::Meeting>>,
@@ -218,17 +222,12 @@ impl Core {
             "transcribing" | "polishing" => self.set_tray("busy"),
             _ => self.tray_idle(),
         }
-        let _ = self.app.emit_to("pill", "pill", PillState { state, app: app.to_string(), message });
+        // A dictation started from the circle keeps that circle (so a second click can stop it).
+        // The shortcut still uses the wide status capsule.
+        let dot = state == "listening" && self.from_dot.load(Ordering::SeqCst);
+        let _ = self.app.emit_to("pill", "pill", PillState { state, app: app.to_string(), message, shape: if dot { "dot" } else { "pill" } });
         if let Some(w) = self.app.get_webview_window("pill") {
-            // Compact capsule while working; wider only when there's a message to read.
-            let wide = matches!(state, "error" | "empty");
-            let size = if wide { PILL_WIDE } else { PILL };
-            if self.shape_pill(&w, size) || state == "listening" {
-                self.place_pill(&w, size);
-            }
-            if let Ok(h) = w.hwnd() {
-                win::show_no_activate(h.0 as isize);
-            }
+            self.present_pill(&w, state, dot);
         }
         let linger = match state {
             "done" => Some(1600),
@@ -248,18 +247,19 @@ impl Core {
         }
     }
 
-    /// Back to idle: either a small translucent dot (if the user wants one) or nothing at all.
+    /// Back to idle: either the circle (if the user wants one) or nothing at all.
+    /// `generation` is the pill update this rest belongs to. A newer update (a click that
+    /// already started dictation) wins, so a late rest cannot cover the listening circle.
     fn rest_pill(&self, generation: u64) {
+        if self.pill_gen.load(Ordering::SeqCst) != generation {
+            return;
+        }
         let Some(w) = self.app.get_webview_window("pill") else { return };
         let dot = self.settings.read().idle_dot;
         let state = if dot { "idle" } else { "hidden" };
-        let _ = self.app.emit_to("pill", "pill", PillState { state, app: String::new(), message: String::new() });
+        let _ = self.app.emit_to("pill", "pill", PillState { state, app: String::new(), message: String::new(), shape: "dot" });
         if dot {
-            self.shape_pill(&w, PILL_IDLE);
-            self.place_pill(&w, PILL_IDLE);
-            if let Ok(h) = w.hwnd() {
-                win::show_no_activate(h.0 as isize);
-            }
+            self.present_pill(&w, "idle", true);
             return;
         }
         std::thread::sleep(Duration::from_millis(220)); // let the exit animation play
@@ -270,8 +270,53 @@ impl Core {
         }
     }
 
+    /// Show the pill window as either the round button (`dot`) or the status capsule.
+    /// The circle accepts clicks and stays where the user dragged it. The capsule lets clicks through.
+    fn present_pill(&self, w: &tauri::WebviewWindow, state: &str, dot: bool) {
+        let wide = matches!(state, "error" | "empty");
+        let size = if dot { PILL_IDLE } else if wide { PILL_WIDE } else { PILL };
+        let resized = self.shape_pill(w, size);
+        if dot {
+            self.place_idle_dot(w);
+        } else if resized || state == "listening" {
+            self.place_pill(w, size);
+        }
+        if let Ok(h) = w.hwnd() {
+            let hwnd = h.0 as isize;
+            win::make_overlay(hwnd, !dot);
+            let scale = w.scale_factor().unwrap_or(1.0);
+            win::clip_circle(hwnd, dot, (size.0 * scale).round() as i32, (size.1 * scale).round() as i32);
+            win::show_no_activate(hwnd);
+        }
+    }
+
+    /// The circle's saved spot, or the bottom centre the first time.
+    fn place_idle_dot(&self, w: &tauri::WebviewWindow) {
+        let (x, y) = {
+            let s = self.settings.read();
+            (s.dot_x, s.dot_y)
+        };
+        if let (Some(x), Some(y)) = (x, y) {
+            if self.point_on_screen(x, y) {
+                let _ = w.set_position(PhysicalPosition::new(x, y));
+                return;
+            }
+        }
+        self.place_pill(w, PILL_IDLE);
+    }
+
+    fn point_on_screen(&self, x: i32, y: i32) -> bool {
+        let Ok(monitors) = self.app.available_monitors() else { return false };
+        monitors.into_iter().any(|m| {
+            let a = m.work_area();
+            let (px, py) = (a.position.x, a.position.y);
+            let (pw, ph) = (a.size.width as i32, a.size.height as i32);
+            x > px - 200 && y > py - 200 && x < px + pw && y < py + ph
+        })
+    }
+
     /// The pill window is a plain, solid window exactly the size of what it shows (the capsule, or
-    /// just the small idle logo), with native rounded corners: nothing transparent, nothing clipped.
+    /// the idle circle), with native rounded corners. The circle is clipped to a disc on top of that.
     /// Returns true when the size changed (the caller then re-centres it).
     fn shape_pill(&self, w: &tauri::WebviewWindow, (width, height): (f64, f64)) -> bool {
         let changed = w
@@ -318,10 +363,13 @@ impl Core {
         match ev {
             HotkeyEvent::DictateDown => {
                 if self.rec.lock().is_some() {
-                    if mode != "hold" {
+                    // Hold mode ignores a second press. A circle-started session is click-to-toggle,
+                    // so the shortcut stops it too.
+                    if mode != "hold" || self.from_dot.load(Ordering::SeqCst) {
                         self.finish();
                     }
                 } else {
+                    self.from_dot.store(false, Ordering::SeqCst);
                     self.begin();
                 }
             }
@@ -334,6 +382,7 @@ impl Core {
                 }
             }
             HotkeyEvent::Cancel => {
+                self.from_dot.store(false, Ordering::SeqCst);
                 let taken = self.rec.lock().take(); // release the lock before pill() reads it again
                 if let Some(r) = taken {
                     self.recording.store(false, Ordering::SeqCst);
@@ -347,8 +396,20 @@ impl Core {
         }
     }
 
+    /// Click on the circle: start dictation, or stop it if this circle already started it.
+    fn dot_click(self: &Arc<Self>) {
+        log::log("dot click");
+        if self.rec.lock().is_some() {
+            self.finish();
+        } else {
+            self.from_dot.store(true, Ordering::SeqCst);
+            self.begin();
+        }
+    }
+
     fn begin(self: &Arc<Self>) {
         if self.asr.read().is_none() {
+            self.from_dot.store(false, Ordering::SeqCst);
             let msg = match self.status.lock().asr.as_str() {
                 "error" => "Speech model failed to load — open Seda",
                 _ => "Speech model is still loading…",
@@ -370,7 +431,10 @@ impl Core {
                 self.spawn_level_meter();
                 self.spawn_live_transcriber(live);
             }
-            Err(e) => self.pill("error", "", format!("Microphone: {e}")),
+            Err(e) => {
+                self.from_dot.store(false, Ordering::SeqCst);
+                self.pill("error", "", format!("Microphone: {e}"));
+            }
         }
     }
 
@@ -419,6 +483,7 @@ impl Core {
     }
 
     fn finish(self: &Arc<Self>) {
+        self.from_dot.store(false, Ordering::SeqCst);
         let Some(active) = self.rec.lock().take() else { return };
         self.recording.store(false, Ordering::SeqCst);
         hotkey::set_recording(false);
@@ -720,6 +785,39 @@ fn local_hotkey(window: tauri::WebviewWindow, event: String) -> Result<(), Strin
     only(&window, "main")?;
     hotkey::local(&event);
     Ok(())
+}
+
+/// Click the on-screen circle: start dictation, or stop a dictation that circle started.
+#[tauri::command]
+fn dot_click(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "pill")?;
+    core.inner().dot_click();
+    Ok(())
+}
+
+/// Drag the circle. `dx` and `dy` are CSS pixels since the last move (the webview's own pixels).
+#[tauri::command]
+fn dot_nudge(window: tauri::WebviewWindow, dx: f64, dy: f64) -> Result<(), String> {
+    only(&window, "pill")?;
+    if dx == 0.0 && dy == 0.0 {
+        return Ok(());
+    }
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let x = pos.x + (dx * scale).round() as i32;
+    let y = pos.y + (dy * scale).round() as i32;
+    window.set_position(tauri::PhysicalPosition::new(x, y)).map_err(|e| e.to_string())
+}
+
+/// Remember where the circle was dropped, so the next launch puts it back.
+#[tauri::command]
+fn dot_save(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "pill")?;
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let mut s = core.settings.write();
+    s.dot_x = Some(pos.x);
+    s.dot_y = Some(pos.y);
+    s.save().map_err(|e| e.to_string())
 }
 
 /// Commands that act on your screen or microphone may only come from the window they belong to.
@@ -1568,7 +1666,7 @@ fn tauri_main() {
             mic_test_start, mic_test_stop, list_mics, open_mic_privacy, test_pill, finish_onboarding, diagnostics, open_log,
             meeting_start, meeting_stop, meeting_status, meetings_list, meeting_get, meeting_delete, meeting_renotes,
             meeting_set_my_notes, meeting_save_notes, meeting_ask, meeting_clear_chat,
-            call_start, call_dismiss, call_hide, call_open, call_apps, local_hotkey,
+            call_start, call_dismiss, call_hide, call_open, call_apps, local_hotkey, dot_click, dot_nudge, dot_save,
             app_version, update_status, update_check, update_install, meeting_resume
         ])
         .setup(|app| {
@@ -1591,6 +1689,7 @@ fn tauri_main() {
                 rec: Mutex::new(None),
                 recording: Arc::new(AtomicBool::new(false)),
                 pill_gen: AtomicU64::new(0),
+                from_dot: AtomicBool::new(false),
             meeting: Mutex::new(None),
                 call: Mutex::new(CallState::default()),
                 fix: Mutex::new(None),

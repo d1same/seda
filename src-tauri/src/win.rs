@@ -268,15 +268,43 @@ pub fn make_overlay(hwnd: isize, click_through: bool) {
         let strip = (WS_CAPTION.0 | WS_THICKFRAME.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0 | WS_BORDER.0 | WS_DLGFRAME.0) as isize;
         SetWindowLongPtrW(h, GWL_STYLE, (style & !strip) | WS_POPUP.0 as isize);
         let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-        let flags = (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0 | if click_through { WS_EX_TRANSPARENT.0 } else { 0 }) as isize;
-        let drop = (WS_EX_WINDOWEDGE.0 | WS_EX_CLIENTEDGE.0 | WS_EX_DLGMODALFRAME.0) as isize;
+        // Drop TRANSPARENT too, or turning click-through off would leave the old flag in place
+        // and the circle could never receive a click.
+        let drop = (WS_EX_WINDOWEDGE.0 | WS_EX_CLIENTEDGE.0 | WS_EX_DLGMODALFRAME.0 | WS_EX_TRANSPARENT.0) as isize;
+        let mut flags = (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize;
+        if click_through {
+            flags |= WS_EX_TRANSPARENT.0 as isize;
+        }
         SetWindowLongPtrW(h, GWL_EXSTYLE, (ex & !drop) | flags);
         let _ = SetWindowPos(h, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 
-/// Native rounded corners (Windows 11). Used instead of a clip region: clipping a WebView2 window
-/// can stop it from appearing on screen at all.
+/// Clip the pill window to a circle of `px` by `py` physical pixels, or restore the full rectangle.
+/// The region is applied only after the window has a real size: an empty clip hides a WebView.
+pub fn clip_circle(hwnd: isize, on: bool, px: i32, py: i32) {
+    use windows::Win32::Graphics::Gdi::{CreateEllipticRgn, SetWindowRgn};
+    unsafe {
+        let h = HWND(hwnd as _);
+        if !on || px < 8 || py < 8 {
+            let _ = SetWindowRgn(h, None, true);
+            return;
+        }
+        let rgn = CreateEllipticRgn(0, 0, px, py);
+        if rgn.is_invalid() {
+            return;
+        }
+        // Success: Windows now owns the region and deletes it. On failure we must delete it ourselves.
+        if SetWindowRgn(h, Some(rgn), true) == 0 {
+            use windows::core::Free;
+            let mut rgn = rgn;
+            rgn.free();
+        }
+    }
+}
+
+/// Native rounded corners (Windows 11). The status capsule uses these. The idle circle uses
+/// `clip_circle` instead: a rounded-corner preference cannot make a disc.
 pub fn round_corners(hwnd: isize) {
     use windows::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
     unsafe {

@@ -39,7 +39,12 @@ pub struct Settings {
     pub save_audio: bool,
     pub sounds: bool,
     pub pill_position: String, // "bottom" | "top"
-    pub idle_dot: bool,        // show a small translucent dot while idle
+    pub idle_dot: bool,        // show a circle while idle: click to dictate, drag to move
+    /// Where the user left that circle, in physical pixels. Empty = bottom centre of the screen.
+    #[serde(default)]
+    pub dot_x: Option<i32>,
+    #[serde(default)]
+    pub dot_y: Option<i32>,
     pub autostart: bool,       // start with Windows (quietly, in the tray)
     pub input_device: String,  // microphone name; "" = Windows default
     pub polish: String,        // "smart" (writing AI only when needed) | "always"; `cleanup` = off switch
@@ -71,6 +76,8 @@ impl Default for Settings {
             sounds: true,
             pill_position: "bottom".into(),
             idle_dot: false,
+            dot_x: None,
+            dot_y: None,
             autostart: true,
             input_device: String::new(),
             polish: "smart".into(),

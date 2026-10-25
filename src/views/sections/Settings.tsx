@@ -138,8 +138,8 @@ export default function Settings({ settings, update, status, go }: { settings: S
       <Row title="Your name" help="Seda greets you, labels you in transcripts, and knows “Alex, can you…” in a meeting is a task for you.">
         <NameField settings={settings} update={update} />
       </Row>
-      <Row title="When not recording" help="What you see on screen while Seda waits.">
-        <Segmented value={settings.idle_dot ? "dot" : "none"} options={[["none", "Nothing"], ["dot", "Small dot"]]} onChange={(v) => update("idle_dot", v === "dot")} />
+      <Row title="When not recording" help="Circle: click it to start dictation, click again to stop, drag it anywhere.">
+        <Segmented value={settings.idle_dot ? "dot" : "none"} options={[["none", "Nothing"], ["dot", "Circle"]]} onChange={(v) => update("idle_dot", v === "dot")} />
       </Row>
       <Row title="Fix selected text" help="Select text anywhere and press this to correct or rewrite it.">
         <ShortcutPicker which="fix" settings={settings} update={update} />
