@@ -77,7 +77,27 @@ struct CallState {
 /// Pop-up sizes (logical px): working capsule, capsule with a message, idle circle.
 const PILL: (f64, f64) = (148.0, 30.0);
 const PILL_WIDE: (f64, f64) = (300.0, 30.0);
-const PILL_IDLE: (f64, f64) = (72.0, 72.0);
+const PILL_IDLE: (f64, f64) = (56.0, 56.0);
+
+/// Physical pixels of the circle. Prefer the window's real size once it is a small square,
+/// because a clip taken from the size we just requested is wrong until that resize lands.
+fn dot_pixels(w: &tauri::WebviewWindow, size: (f64, f64)) -> (i32, i32) {
+    if let Ok(outer) = w.outer_size() {
+        let width = outer.width as i32;
+        let height = outer.height as i32;
+        if small_square(width, height) {
+            return (width, height);
+        }
+    }
+    let scale = w.scale_factor().unwrap_or(1.0);
+    ((size.0 * scale).round() as i32, (size.1 * scale).round() as i32)
+}
+
+/// The idle circle is a small square. The status capsule is a wide short bar, so a late clip
+/// can tell them apart and will not turn the capsule into a disc.
+fn small_square(width: i32, height: i32) -> bool {
+    width >= 8 && height >= 8 && width < 220 && (width - height).abs() <= 4
+}
 
 pub struct Core {
     app: AppHandle,
@@ -275,7 +295,8 @@ impl Core {
     fn present_pill(&self, w: &tauri::WebviewWindow, state: &str, dot: bool) {
         let wide = matches!(state, "error" | "empty");
         let size = if dot { PILL_IDLE } else if wide { PILL_WIDE } else { PILL };
-        let resized = self.shape_pill(w, size);
+        let generation = self.pill_gen.load(Ordering::SeqCst);
+        let resized = self.shape_pill(w, size, dot);
         if dot {
             self.place_idle_dot(w);
         } else if resized || state == "listening" {
@@ -284,9 +305,36 @@ impl Core {
         if let Ok(h) = w.hwnd() {
             let hwnd = h.0 as isize;
             win::make_overlay(hwnd, !dot);
-            let scale = w.scale_factor().unwrap_or(1.0);
-            win::clip_circle(hwnd, dot, (size.0 * scale).round() as i32, (size.1 * scale).round() as i32);
+            // set_size finishes on the next window message, so the size we asked for may not be
+            // the size on screen yet. Clip to the real window once it is a small square.
+            let (px, py) = dot_pixels(w, size);
+            win::clip_circle(hwnd, dot, px, py);
             win::show_no_activate(hwnd);
+        }
+        if dot {
+            // A resize can clear the clip and leave the light square frame. Put the disc back
+            // once the new size has landed, and skip it if a newer update already showed the capsule.
+            let app = self.app.clone();
+            std::thread::spawn(move || {
+                for delay in [50u64, 150] {
+                    std::thread::sleep(Duration::from_millis(delay));
+                    let core = app.state::<Arc<Core>>().inner().clone();
+                    if core.pill_gen.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
+                    let Some(win) = app.get_webview_window("pill") else { return };
+                    let Ok(outer) = win.outer_size() else { return };
+                    let width = outer.width as i32;
+                    let height = outer.height as i32;
+                    if !small_square(width, height) {
+                        continue;
+                    }
+                    let Ok(h) = win.hwnd() else { return };
+                    let hwnd = h.0 as isize;
+                    win::round_corners(hwnd, false);
+                    win::clip_circle(hwnd, true, width, height);
+                }
+            });
         }
     }
 
@@ -317,9 +365,10 @@ impl Core {
     }
 
     /// The pill window is a plain, solid window exactly the size of what it shows (the capsule, or
-    /// the idle circle), with native rounded corners. The circle is clipped to a disc on top of that.
+    /// the idle circle). The capsule gets native rounded corners. The circle does not: those
+    /// corners are a light rounded square, and the disc is clipped on top instead.
     /// Returns true when the size changed (the caller then re-centres it).
-    fn shape_pill(&self, w: &tauri::WebviewWindow, (width, height): (f64, f64)) -> bool {
+    fn shape_pill(&self, w: &tauri::WebviewWindow, (width, height): (f64, f64), dot: bool) -> bool {
         let changed = w
             .inner_size()
             .ok()
@@ -328,8 +377,15 @@ impl Core {
         // Always (re)set: it also makes the page fill the window after its frame was removed,
         // otherwise a light strip of bare window shows around the pill.
         let _ = w.set_size(tauri::LogicalSize::new(width, height));
+        // Match the page. A sliver of the default light window is the gray square in the screenshot.
+        let _ = w.set_background_color(Some(tauri::window::Color(
+            if dot { 0x12 } else { 0x14 },
+            if dot { 0x12 } else { 0x12 },
+            if dot { 0x12 } else { 0x10 },
+            255,
+        )));
         if let Ok(h) = w.hwnd() {
-            win::round_corners(h.0 as isize);
+            win::round_corners(h.0 as isize, !dot);
         }
         changed
     }
@@ -1223,7 +1279,7 @@ impl Core {
             return win::hide(h.0 as isize);
         }
         let _ = w.set_size(tauri::LogicalSize::new(340.0, 84.0));
-        win::round_corners(h.0 as isize);
+        win::round_corners(h.0 as isize, true);
         if let (Some(m), Ok(size)) = (self.app.primary_monitor().ok().flatten(), w.outer_size()) {
             let area = m.work_area();
             let margin = (16.0 * m.scale_factor()) as i32;

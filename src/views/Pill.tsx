@@ -127,7 +127,7 @@ export default function Pill() {
 
   if (shape === "dot" && (s === "idle" || s === "listening")) {
     return (
-      <div className="pill-stage in">
+      <div className="pill-stage in dot">
         <IdleCircle listening={s === "listening"} secs={secs} onToggle={toggleDot} />
       </div>
     );
@@ -222,7 +222,7 @@ function IdleCircle({ listening, secs, onToggle }: { listening: boolean; secs: n
         onToggle();
       }}
     >
-      <Logo size={listening ? 34 : 44} dot={listening ? "#ff4b2b" : "#ff1f26"} pulse={listening} outline={false} />
+      <Logo size={listening ? 28 : 52} dot={listening ? "#ff4b2b" : "#ff1f26"} pulse={listening} outline={false} plate={false} />
       {listening && <span className="idle-time">{fmt(secs)}</span>}
     </button>
   );

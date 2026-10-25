@@ -303,12 +303,14 @@ pub fn clip_circle(hwnd: isize, on: bool, px: i32, py: i32) {
     }
 }
 
-/// Native rounded corners (Windows 11). The status capsule uses these. The idle circle uses
-/// `clip_circle` instead: a rounded-corner preference cannot make a disc.
-pub fn round_corners(hwnd: isize) {
-    use windows::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
+/// Native rounded corners (Windows 11) for the status capsule. The idle circle turns them off:
+/// a rounded-corner preference is a light rounded square, not a disc. The disc is `clip_circle`.
+pub fn round_corners(hwnd: isize, round: bool) {
+    use windows::Win32::Graphics::Dwm::{
+        DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DwmSetWindowAttribute,
+    };
     unsafe {
-        let pref = DWMWCP_ROUND;
+        let pref = if round { DWMWCP_ROUND } else { DWMWCP_DONOTROUND };
         let _ = DwmSetWindowAttribute(
             HWND(hwnd as _),
             DWMWA_WINDOW_CORNER_PREFERENCE,
