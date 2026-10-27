@@ -6,11 +6,12 @@ Private voice typing and meeting notes for Windows. Everything runs on your own 
 
 **[Download the installer](https://github.com/d1same/seda/releases/latest)** (Windows 10/11, 64-bit)
 
-- **Dictation anywhere.** Hold a shortcut (any key or mouse button, e.g. Mouse 4), talk, let go: clean, punctuated text is pasted where your cursor is. Say "no wait…" and Seda drops the part you took back.
+- **Dictation anywhere.** Hold a shortcut (any key or mouse button, e.g. Mouse 4) and talk. The capsule shows the words while you are still holding. Let go and they paste at the cursor right away. Say "no wait…" and Seda drops the part you took back.
 - **English + one more language.** Mix them in the same sentence. Persian has its own fine-tuned speech model; Chinese, Hindi, Spanish, Arabic, French, Portuguese, Russian, German, Japanese and Greek use the multilingual one.
-- **Writing AI.** A local model adds punctuation and paragraphs, and matches the app (email layout in Outlook/Gmail, bullets in Jira, casual in Teams/Slack).
+- **Writing AI.** After the words land, a local model can tidy that same sentence in place: punctuation, paragraphs, and the app you are in (email layout in Outlook/Gmail, bullets in Jira, casual in Teams/Slack). It also sees the text already in the box, so "reply yes, and copy Bob" can use the sentence on screen.
+- **Snippets.** Say "my email" and Seda pastes the address from Settings. Add your own phrase → text pairs there too.
 - **Fix my text.** Select text anywhere, press a shortcut: correct grammar, make it formal, friendly, shorter, or translate.
-- **Meetings.** Records you (microphone) and everyone else (the computer's audio), transcribes live, and writes notes with decisions and action items when the call ends. No bot joins your call. Seda notices when Teams, Zoom, Meet and others start a call and offers to take notes.
+- **Meetings.** Records you (microphone) and everyone else (the computer's audio), transcribes live, and writes notes with decisions and action items when the call ends. No bot joins your call. Seda notices when Teams, Zoom, Meet and others start a call and offers to take notes. If Outlook is already open, the meeting takes the appointment's name, and one other person is named in the transcript. Search also matches what was said.
 - **Ask about a meeting.** "What did I agree to do?", "Write a follow-up email", "Make the notes shorter": answers and edits come from the local AI.
 - **Learns from you.** Correct a dictation once and Seda remembers the fix; add names and terms it should always spell right.
 

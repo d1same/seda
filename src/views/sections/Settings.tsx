@@ -61,6 +61,42 @@ export function NameField({ settings, update, autoFocus }: { settings: S; update
   return <input className="field" style={{ width: 240 }} dir="auto" placeholder="e.g. Alex" value={v} autoFocus={autoFocus} onChange={(e) => setV(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && save()} />;
 }
 
+function EmailField({ settings, update }: { settings: S; update: Update }) {
+  const [v, setV] = useState(settings.email);
+  const save = () => { const next = v.trim(); if (next !== settings.email) update("email", next); };
+  return <input className="field" style={{ width: 240 }} dir="auto" placeholder="you@company.com" value={v} onChange={(e) => setV(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.currentTarget.blur())} />;
+}
+
+function SnippetEditor({ settings, update }: { settings: S; update: Update }) {
+  const [say, setSay] = useState("");
+  const [paste, setPaste] = useState("");
+  const add = () => {
+    const phrase = say.trim();
+    const text = paste.trim();
+    if (!phrase || !text) return;
+    update("snippets", [...settings.snippets, { say: phrase, paste: text }]);
+    setSay("");
+    setPaste("");
+  };
+  return (
+    <div className="snippet-editor">
+      <div className="snippet-add">
+        <input className="field" dir="auto" placeholder="When you say…" value={say} onChange={(e) => setSay(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+        <input className="field" dir="auto" placeholder="Seda pastes…" value={paste} onChange={(e) => setPaste(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+        <button className="btn small" type="button" onClick={add}>Add</button>
+      </div>
+      {settings.snippets.map((sn) => (
+        <div key={`${sn.say}\0${sn.paste}`} className="snippet-row">
+          <span className="say" dir="auto">{sn.say}</span>
+          <span className="faint">→</span>
+          <span className="paste" dir="auto">{sn.paste}</span>
+          <button className="btn ghost small" type="button" onClick={() => update("snippets", settings.snippets.filter((x) => x !== sn))}>Remove</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const DETECT_HELP: Record<S["meeting_detect"], string> = {
   ask: "When a call starts, a small card asks whether to take notes.",
   auto: "Every call is recorded and summarised automatically. Stops when the call ends.",
@@ -100,8 +136,8 @@ export default function Settings({ settings, update, status, go }: { settings: S
         title="Writing AI"
         help={
           !settings.cleanup ? "Off: text is pasted exactly as heard. Fastest."
-          : settings.polish === "always" ? "Every dictation is polished. Best formatting, adds 1–7 s."
-          : "Only when you say “no wait”, “um”, “I mean”… or write a long email. Everything else pastes instantly."
+          : settings.polish === "always" ? "Words paste as soon as you stop talking. The model then tidies that sentence in place."
+          : "Words paste as soon as you stop talking. The model tidies them only when you correct yourself, hesitate, or dictate a long email."
         }
       >
         <Segmented
@@ -137,6 +173,12 @@ export default function Settings({ settings, update, status, go }: { settings: S
       <div className="group-label label">General</div>
       <Row title="Your name" help="Seda greets you, labels you in transcripts, and knows “Alex, can you…” in a meeting is a task for you.">
         <NameField settings={settings} update={update} />
+      </Row>
+      <Row title="Your email" help={'Say "my email" and Seda pastes this address.'}>
+        <EmailField settings={settings} update={update} />
+      </Row>
+      <Row title="Spoken snippets" help="Say the phrase, and Seda pastes the saved text." top>
+        <SnippetEditor settings={settings} update={update} />
       </Row>
       <Row title="When not recording" help="Circle: click it to start dictation, click again to stop, drag it anywhere.">
         <Segmented value={settings.idle_dot ? "dot" : "none"} options={[["none", "Nothing"], ["dot", "Circle"]]} onChange={(v) => update("idle_dot", v === "dot")} />

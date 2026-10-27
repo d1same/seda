@@ -81,6 +81,13 @@
 .mrow:last-child { border-bottom: 0; }
 .mrow:hover .ttl { text-decoration: underline; text-underline-offset: 3px; }
 .mrow .ttl { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: plaintext; }
+.mrow .who-bit { font-weight: 400; color: var(--ink-3); }
+.snippet-editor { display: flex; flex-direction: column; gap: 8px; min-width: 0; width: 100%; }
+.snippet-add, .snippet-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.snippet-add .field { width: 150px; }
+.snippet-row .say, .snippet-row .paste { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: plaintext; }
+.snippet-row .say { flex: none; max-width: 140px; }
+.snippet-row .paste { flex: 1; min-width: 0; color: var(--ink-2); }
 .mrow .faint { font-size: 12.5px; flex: none; }
 /* ---------- history: one line each, click to open ---------- */
 .day-label { margin: 22px 0 6px; }

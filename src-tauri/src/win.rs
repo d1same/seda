@@ -110,6 +110,68 @@ fn set_private(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::E
     cb.set().exclude_from_history().exclude_from_cloud().text(text.to_string())
 }
 
+const VK_LEFT: u16 = 0x25;
+
+/// Select the `n` characters before the caret, then paste `new` over them.
+/// The caret has to still be at the end of the draft this just typed.
+pub fn replace_tail(old: &str, new: &str) -> anyhow::Result<()> {
+    if foreground_is_elevated() {
+        copy_private(new)?;
+        anyhow::bail!("This window runs as administrator, so Windows blocks typing into it. The text is on your clipboard — press Ctrl+V.");
+    }
+    let n = old.chars().count();
+    if n == 0 || n > 1500 {
+        anyhow::bail!("nothing to replace");
+    }
+    select_back(n);
+    std::thread::sleep(Duration::from_millis(40));
+    paste(new)
+}
+
+fn select_back(n: usize) {
+    let mut inputs = Vec::with_capacity(n * 2 + 2);
+    inputs.push(key(VK_SHIFT, false));
+    for _ in 0..n {
+        inputs.push(key(VK_LEFT, false));
+        inputs.push(key(VK_LEFT, true));
+    }
+    inputs.push(key(VK_SHIFT, true));
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// The text already in the focused box, just before the caret. Empty when the app has no text
+/// pattern (a game, a terminal, a canvas). This reads; it does not select or copy.
+pub fn text_before_caret(max_chars: usize) -> String {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationTextPattern2, TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id,
+    };
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let Ok(auto) = CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None::<windows::core::IUnknown>, CLSCTX_INPROC_SERVER) else {
+            return String::new();
+        };
+        let Ok(focused) = auto.GetFocusedElement() else { return String::new() };
+        let Ok(pattern) = focused.GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id) else {
+            return String::new();
+        };
+        let mut active = windows::core::BOOL(0);
+        let Ok(range) = pattern.GetCaretRange(&mut active) else { return String::new() };
+        let back = max_chars.min(800) as i32;
+        let _ = range.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -back);
+        let Ok(text) = range.GetText(back.max(1)) else { return String::new() };
+        let owned = text.to_string();
+        let count = owned.chars().count();
+        if count <= max_chars {
+            owned
+        } else {
+            owned.chars().skip(count - max_chars).collect()
+        }
+    }
+}
+
 pub fn paste(text: &str) -> anyhow::Result<()> {
     if foreground_is_elevated() {
         let mut cb = arboard::Clipboard::new()?;

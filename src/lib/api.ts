@@ -40,8 +40,12 @@ export type Settings = {
   meeting_detect: "ask" | "auto" | "off";
   meeting_apps: string[];
   user_name: string;
+  email: string;
+  snippets: Snippet[];
   keep_meeting_audio: boolean;
 };
+
+export type Snippet = { say: string; paste: string };
 
 export type CallApp = { id: string; name: string; installed: boolean };
 export type UpdateInfo = { version: string; notes: string };
@@ -55,11 +59,11 @@ export type HistoryItem = {
 
 export type Fix = { wrong: string; right: string; hits: number };
 
-export type Segment = { who: "You" | "Them"; start: number; text: string };
-/** In the list, transcript and notes are empty. 	itle is empty while the notes are being written. */
-export type Meeting = { id: number; ts: string; secs: number; title: string; transcript: string; notes: string; my_notes: string; chat: string };
+export type Segment = { who: string; start: number; text: string };
+/** In the list, transcript and notes are empty. Title is empty while the notes are being written. `search` also matches what was said and the Outlook appointment. */
+export type Meeting = { id: number; ts: string; secs: number; title: string; transcript: string; notes: string; my_notes: string; chat: string; people?: string; cal?: string; search?: string };
 export type ChatTurn = { role: "you" | "ai"; text: string; edited?: boolean };
-export type MeetingStatus = { running: boolean; secs: number; segments: Segment[]; my_notes: string; resuming?: string };
+export type MeetingStatus = { running: boolean; secs: number; segments: Segment[]; my_notes: string; resuming?: string; title?: string; people?: string };
 
 export type Pack = "full" | "light" | "speech";
 export type SetupItem = { id: string; name: string; size_mb: number; state: "ready" | "missing"; path: string };

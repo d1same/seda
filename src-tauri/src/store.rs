@@ -34,6 +34,15 @@ pub struct Meeting {
     pub my_notes: String,
     /// JSON list of {role: "you"|"ai", text} — the Ask conversation.
     pub chat: String,
+    /// Other people from the Outlook appointment, joined with " | ".
+    #[serde(default)]
+    pub people: String,
+    /// Calendar subject, kept so a search still finds it after the notes rename the meeting.
+    #[serde(default)]
+    pub cal: String,
+    /// title + people + calendar subject + what was said. Filled for the list; empty on a single meeting.
+    #[serde(default)]
+    pub search: String,
     /// JSON: {"parts": [...], "until": secs}. The part notes behind the final notes, kept so a
     /// resumed meeting only needs notes for its new stretch.
     #[serde(skip)]
@@ -69,7 +78,7 @@ impl Store {
                 id INTEGER PRIMARY KEY, ts TEXT NOT NULL, secs REAL, title TEXT, transcript TEXT, notes TEXT);",
         )?;
         // Added after the first meetings release: older databases get the columns here.
-        for col in ["my_notes", "chat", "parts"] {
+        for col in ["my_notes", "chat", "parts", "people", "cal"] {
             let _ = conn.execute(&format!("ALTER TABLE meetings ADD COLUMN {col} TEXT DEFAULT ''"), []);
         }
         Ok(Self(Mutex::new(conn)))
@@ -146,12 +155,24 @@ impl Store {
         let _ = self.0.lock().execute("UPDATE meetings SET title=?, notes=? WHERE id=?", params![title, notes, id]);
     }
 
+    pub fn set_meeting_meta(&self, id: i64, people: &str, cal: &str) {
+        let _ = self.0.lock().execute("UPDATE meetings SET people=?, cal=? WHERE id=?", params![people, cal, id]);
+    }
+
     /// Newest first. The list leaves out transcript and notes (they can be long).
     pub fn meetings(&self) -> Vec<Meeting> {
         let c = self.0.lock();
-        let mut st = c.prepare("SELECT id,ts,secs,title FROM meetings ORDER BY id DESC").unwrap();
+        let mut st = c.prepare("SELECT id,ts,secs,title,COALESCE(people,''),COALESCE(cal,''),COALESCE(transcript,'') FROM meetings ORDER BY id DESC").unwrap();
         st.query_map([], |r| {
-            Ok(Meeting { id: r.get(0)?, ts: r.get(1)?, secs: r.get(2)?, title: r.get(3)?, transcript: String::new(), notes: String::new(), my_notes: String::new(), chat: String::new(), parts: String::new() })
+            let title: String = r.get(3)?;
+            let people: String = r.get(4)?;
+            let cal: String = r.get(5)?;
+            let transcript: String = r.get(6)?;
+            let search = crate::smart::meeting_haystack(&title, &people, &cal, &transcript);
+            Ok(Meeting {
+                id: r.get(0)?, ts: r.get(1)?, secs: r.get(2)?, title, transcript: String::new(), notes: String::new(),
+                my_notes: String::new(), chat: String::new(), parts: String::new(), people, cal, search,
+            })
         })
         .unwrap()
         .filter_map(Result::ok)
@@ -161,10 +182,10 @@ impl Store {
     pub fn meeting(&self, id: i64) -> Option<Meeting> {
         self.0
             .lock()
-            .query_row("SELECT id,ts,secs,title,transcript,notes,COALESCE(my_notes,''),COALESCE(chat,'[]'),COALESCE(parts,'') FROM meetings WHERE id=?", [id], |r| {
+            .query_row("SELECT id,ts,secs,title,transcript,notes,COALESCE(my_notes,''),COALESCE(chat,'[]'),COALESCE(parts,''),COALESCE(people,''),COALESCE(cal,'') FROM meetings WHERE id=?", [id], |r| {
                 Ok(Meeting {
                     id: r.get(0)?, ts: r.get(1)?, secs: r.get(2)?, title: r.get(3)?, transcript: r.get(4)?, notes: r.get(5)?,
-                    my_notes: r.get(6)?, chat: r.get(7)?, parts: r.get(8)?,
+                    my_notes: r.get(6)?, chat: r.get(7)?, parts: r.get(8)?, people: r.get(9)?, cal: r.get(10)?, search: String::new(),
                 })
             })
             .ok()

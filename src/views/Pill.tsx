@@ -18,8 +18,9 @@ function runDemo(): () => void {
       emitLocal("level", { level: speech * 0.5, secs });
     }, 33);
     timers.push(
+      window.setTimeout(() => emitLocal("live-text", "Hi Sam, I sent the report"), 1600),
       window.setTimeout(() => { clearInterval(meter); emitLocal("pill", { state: "transcribing", app: "Outlook", message: "" }); }, 4200),
-      window.setTimeout(() => emitLocal("pill", { state: "polishing", app: "Outlook", message: "" }), 5600),
+      window.setTimeout(() => emitLocal("pill", { state: "polishing", app: "Outlook", message: "Hi Sam, I sent the report." }), 5600),
       window.setTimeout(() => emitLocal("pill", { state: "done", app: "Outlook", message: "Hi Sam, I sent the report. Please take a look." }), 7200),
       window.setTimeout(() => emitLocal("pill", { state: "hidden", app: "", message: "" }), 9000),
       window.setTimeout(cycle, 9800),
@@ -72,20 +73,27 @@ export default function Pill() {
       : { state: "hidden", app: "", message: "", shape: "pill" },
   );
   const [secs, setSecs] = useState(0);
+  const [live, setLive] = useState("");
   const levels = useRef<number[]>(new Array(BARS).fill(0));
   const [, force] = useState(0);
   const sounds = useRef(true);
+  const phase = useRef(st.state);
 
   useEffect(() => {
     const un1 = on<PillState>("pill", async (s) => {
+      phase.current = s.state;
       if (s.state === "listening") {
         levels.current = new Array(BARS).fill(0);
         setSecs(0);
+        setLive("");
         sounds.current = (await api.getSettings().catch(() => null))?.sounds ?? true;
         if (sounds.current) blip([740, 1110]);
       } else if (s.state === "transcribing" && sounds.current) blip([880, 590], 0.04);
       else if (s.state === "done" && sounds.current) blip([1320], 0.025);
       setSt(s);
+    });
+    const unLive = on<string>("live-text", (text) => {
+      if (phase.current === "listening") setLive(text);
     });
     const un2 = on<{ level: number; secs: number }>("level", (p) => {
       const l = levels.current;
@@ -95,7 +103,7 @@ export default function Pill() {
       force((x) => x + 1);
     });
     const stopDemo = !inTauri && new URLSearchParams(location.search).get("demo") === "1" ? runDemo() : () => {};
-    return () => { un1(); un2(); stopDemo(); };
+    return () => { un1(); unLive(); un2(); stopDemo(); };
   }, []);
 
   // Browser preview has no microphone, so the clock runs on its own after a click.
@@ -109,6 +117,14 @@ export default function Pill() {
   const s = st.state;
   const working = s === "transcribing" || s === "polishing";
   const showText = s === "done" || s === "empty" || s === "error" || s === "cancelled";
+  const caption = showText
+    ? (s === "done" ? st.message || "Pasted" : st.message || LABEL[s])
+    : s === "polishing"
+      ? st.message || "Polishing"
+      : s === "listening"
+        ? live
+        : "";
+  const showCaption = caption.length > 0 && (showText || s === "polishing" || s === "listening");
   const lamp = s === "listening" ? "rec" : working ? "work" : s === "done" ? "ok" : s === "error" ? "err" : "idle";
   const shape = st.shape ?? (s === "idle" ? "dot" : "pill");
   const dotShape = shape === "dot" && (s === "idle" || s === "listening");
@@ -169,9 +185,9 @@ export default function Pill() {
         onKeyDown={stoppable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); stopCapsule(); } } : undefined}
       >
         <span className="pill-logo"><Logo size={18} dot={DOT[lamp]} pulse={lamp === "rec" || lamp === "work"} outline={false} /></span>
-        {showText ? (
-          <div className="pill-text" dir="auto" title={st.message}>
-            {s === "done" ? "Pasted" : st.message || LABEL[s]}
+        {showCaption ? (
+          <div className="pill-text" dir="auto" title={caption}>
+            {caption}
           </div>
         ) : (
           <div className={`meter ${working ? "frozen" : ""}`}>

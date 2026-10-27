@@ -24,6 +24,8 @@ let settings: Settings = {
   llm_model: "C:\\Users\\you\\.venvs\\llm\\models\\gemma-4-E4B-it-Q4_K_M.gguf",
   meeting_detect: "ask",
   user_name: "",
+  email: "",
+  snippets: [],
   keep_meeting_audio: false,
   meeting_apps: ["teams", "zoom", "browser", "webex", "slack"],
   onboarded: !location.search.includes("setup"), // preview the setup flow with ?setup
@@ -44,8 +46,8 @@ const meetingSegs = [
   { who: "You", start: 30, text: "باشه، من جلسه‌ی ریویو رو با جان می‌ذارم." },
 ];
 const meetings = [
-  { id: 2, ts: ago(30), secs: 1860, title: "Release plan and budget", transcript: JSON.stringify(meetingSegs), notes: meetingNotes, my_notes: "release thu?\nbudget -10%", chat: JSON.stringify([{ role: "you", text: "Who owns the release checklist?" }, { role: "ai", text: "Sam — she agreed at 0:21." }]) },
-  { id: 1, ts: ago(60 * 26), secs: 920, title: "Weekly sync", transcript: JSON.stringify(meetingSegs.slice(0, 2)), notes: "## Summary\n- Short status round.", my_notes: "", chat: "[]" },
+  { id: 2, ts: ago(30), secs: 1860, title: "Release plan and budget", people: "Sam", cal: "Release plan", search: "Release plan and budget\nSam\nRelease plan\nstaging Thursday checklist", transcript: JSON.stringify(meetingSegs), notes: meetingNotes, my_notes: "release thu?\nbudget -10%", chat: JSON.stringify([{ role: "you", text: "Who owns the release checklist?" }, { role: "ai", text: "Sam — she agreed at 0:21." }]) },
+  { id: 1, ts: ago(60 * 26), secs: 920, title: "Weekly sync", people: "", cal: "", search: "Weekly sync", transcript: JSON.stringify(meetingSegs.slice(0, 2)), notes: "## Summary\n- Short status round.", my_notes: "", chat: "[]" },
 ];
 let meetingOn = false;
 let meetingStarted = 0;
@@ -55,7 +57,7 @@ export function mockInvoke(cmd: string, args: any): any {
     case "meeting_start": meetingOn = true; meetingStarted = Date.now(); return;
     case "meeting_resume": meetingOn = true; meetingStarted = Date.now() - 1860_000; return;
     case "meeting_stop": meetingOn = false; return 2;
-    case "meeting_status": return { running: meetingOn, secs: (Date.now() - meetingStarted) / 1000, segments: meetingOn ? meetingSegs : [], my_notes: "" };
+    case "meeting_status": return { running: meetingOn, secs: (Date.now() - meetingStarted) / 1000, segments: meetingOn ? meetingSegs : [], my_notes: "", title: "", people: "" };
     case "meeting_ask": return [...JSON.parse(meetings[0].chat), { role: "you", text: args.question }, { role: "ai", text: "Mock answer: Sam sends the proposal by Friday." }];
     case "call_apps": return [{ id: "teams", name: "Microsoft Teams", installed: true }, { id: "zoom", name: "Zoom", installed: true }, { id: "browser", name: "Google Meet & browser calls", installed: true }, { id: "webex", name: "Webex", installed: false }, { id: "slack", name: "Slack huddles", installed: false }, { id: "discord", name: "Discord", installed: true }, { id: "whatsapp", name: "WhatsApp", installed: false }];
     case "app_version": return "0.1.3";

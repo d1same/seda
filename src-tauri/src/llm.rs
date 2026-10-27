@@ -338,7 +338,7 @@ impl Llm {
         Ok(text.trim().trim_matches('"').trim().to_string())
     }
 
-    pub fn cleanup(&mut self, raw: &str, style: &str, vocab: &[String], latin_terms: bool) -> Result<String> {
+    pub fn cleanup(&mut self, raw: &str, style: &str, vocab: &[String], latin_terms: bool, context: &str, keep: &[String]) -> Result<String> {
         let style_line = match style_rule(style) {
             "" => String::new(),
             s => format!("\n{s}"),
@@ -348,11 +348,21 @@ impl Llm {
         } else {
             format!("\nSpell these names and terms exactly like this when they appear: {}.", vocab.join(", "))
         };
-        let system = DICTATION
-            .replace("{LATIN}", if latin_terms { LATIN_ON } else { LATIN_OFF })
-            .replace("{STYLE}", &style_line)
-            .replace("{VOCAB}", &vocab_line);
-        // Never keep you waiting: past 8 s the caller pastes the unpolished text instead.
+        let keep_line = if keep.is_empty() {
+            String::new()
+        } else {
+            format!("\nKeep these exact strings unchanged: {}.", keep.join(", "))
+        };
+        let system = format!(
+            "{}{}{}",
+            DICTATION
+                .replace("{LATIN}", if latin_terms { LATIN_ON } else { LATIN_OFF })
+                .replace("{STYLE}", &style_line)
+                .replace("{VOCAB}", &vocab_line),
+            keep_line,
+            crate::smart::context_instruction(context)
+        );
+        // The draft is already on screen. Past 8 s it stays as it was typed.
         self.chat_limited(&system, raw, Duration::from_secs(8))
     }
 
