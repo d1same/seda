@@ -16,7 +16,3 @@ TrackFileAccess = "false"
 # including /utf-8. CL is added by the compiler on top of those flags.
 CL = "/FS"
 _CL_ = "/FS"
-# Pin the policies Whisper leaves unset, so the log keeps today's behavior
-# and drops the CMP0128 / CMP0156 developer warnings.
-CMAKE_POLICY_DEFAULT_CMP0128 = "OLD"
-CMAKE_POLICY_DEFAULT_CMP0156 = "OLD"

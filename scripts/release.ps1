@@ -69,6 +69,41 @@ function Find-BrokenWhisperBuilds([string] $TargetDir) {
     return $hits.ToArray()
 }
 
+function Remove-BuildTree([string] $dir) {
+    if (-not (Test-Path -LiteralPath $dir)) { return }
+    if (Get-Command cmd.exe -ErrorAction SilentlyContinue) {
+        cmd /c "attrib -r `"$dir`" /s /d & rmdir /s /q `"$dir`"" | Out-Null
+    }
+    if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+# Whisper marks its shader steps as safe to run together. On Windows they share
+# one folder, so configure, build, and install start at once and the folder vanishes.
+function Repair-VulkanShaderSteps([string] $TargetDir) {
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $lists = @()
+    $cargoSrc = Join-Path $env:USERPROFILE ".cargo\registry\src"
+    if (Test-Path -LiteralPath $cargoSrc) {
+        $lists += @(Get-ChildItem -Path (Join-Path $cargoSrc "*\whisper-rs-sys-*\whisper.cpp\ggml\src\ggml-vulkan\CMakeLists.txt") -File -ErrorAction SilentlyContinue)
+    }
+    if ($TargetDir -and (Test-Path -LiteralPath $TargetDir)) {
+        $lists += @(Get-ChildItem -Path (Join-Path $TargetDir "release\build\whisper-rs-sys-*\out\whisper.cpp\ggml\src\ggml-vulkan\CMakeLists.txt") -File -ErrorAction SilentlyContinue)
+        foreach ($prefix in @(Get-ChildItem -Path (Join-Path $TargetDir "release\build\whisper-rs-sys-*\out\build\ggml\src\ggml-vulkan\vulkan-shaders-gen-prefix") -Directory -ErrorAction SilentlyContinue)) {
+            Remove-BuildTree $prefix.FullName
+        }
+    }
+    $changed = $false
+    $needle = "cmake_policy(SET CMP0147 NEW)"
+    foreach ($file in $lists) {
+        if (-not $file) { continue }
+        $text = [IO.File]::ReadAllText($file.FullName)
+        if (-not $text.Contains($needle)) { continue }
+        [IO.File]::WriteAllText($file.FullName, $text.Replace($needle, "cmake_policy(SET CMP0147 OLD)"), $utf8)
+        $changed = $true
+    }
+    if ($changed) { Write-Host "The shader tool was being configured and installed at the same time. That step now waits its turn." }
+}
+
 function Invoke-Logged([string] $WorkDir, [string] $LogPath, [string] $CommandLine, [string] $Shell = "cmd.exe", [string] $ShellArgs = "") {
     $utf8 = New-Object System.Text.UTF8Encoding $false
     $writer = New-Object System.IO.StreamWriter($LogPath, $false, $utf8)
@@ -183,14 +218,26 @@ foreach ($name in @("CL", "_CL_")) {
 }
 $env:TrackFileAccess = "false"
 $env:MSBUILDDISABLENODEREUSE = "1"
-$env:CMAKE_POLICY_DEFAULT_CMP0128 = "OLD"
-$env:CMAKE_POLICY_DEFAULT_CMP0156 = "OLD"
 
 $target = (Select-String -Path (Join-Path $root "src-tauri\.cargo\config.toml") -Pattern 'target-dir\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
 New-Item -ItemType Directory -Force -Path $target | Out-Null
-# Imported late by every MSBuild project under the compiler folder, including the
-# nested Vulkan shader try-compile, so the file tracker stays off.
-$props = "<Project>`r`n  <PropertyGroup>`r`n    <TrackFileAccess>false</TrackFileAccess>`r`n  </PropertyGroup>`r`n</Project>`r`n"
+# Imported by every MSBuild project under the compiler folder. Custom steps wait
+# their turn, and the file tracker stays off.
+$props = @"
+<Project>
+  <PropertyGroup>
+    <TrackFileAccess>false</TrackFileAccess>
+  </PropertyGroup>
+  <Target Name="SedaSerialCustomBuild" BeforeTargets="CustomBuild">
+    <ItemGroup>
+      <CustomBuild>
+        <BuildInParallel>false</BuildInParallel>
+      </CustomBuild>
+    </ItemGroup>
+  </Target>
+</Project>
+"@
+$props = $props.Trim() + "`r`n"
 $utf8 = New-Object System.Text.UTF8Encoding $false
 [IO.File]::WriteAllText((Join-Path $target "Directory.Build.targets"), $props, $utf8)
 foreach ($dir in @(Find-BrokenWhisperBuilds $target)) {
@@ -203,6 +250,7 @@ foreach ($dir in @(Find-BrokenWhisperBuilds $target)) {
         if (Test-Path -LiteralPath $fp) { Write-Host "Could not remove $fp. Close anything using it and delete that folder by hand." }
     }
 }
+Repair-VulkanShaderSteps $target
 $log = Join-Path $target "release-build.log"
 $npm = "npm run tauri build"
 if ($Features) { $npm += " -- --features $Features" }
