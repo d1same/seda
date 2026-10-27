@@ -170,8 +170,8 @@ $full = [IO.Path]::GetFullPath($root).TrimEnd('\')
 $onSeda = ($full -eq "Z:\Projects\Whisper\seda") -or ($full -eq "\\10.1.20.4\Ai Projects\Projects\Whisper\seda")
 if (-not $onSeda) { throw "Run this from Z:\Projects\Whisper\seda. This copy is $full." }
 
-# Leftovers from earlier copies. The compiler output is Z:\Projects\Whisper\b
-# (a longer name breaks the Vulkan build). The installer shelf stays too.
+# Leftovers from earlier copies. The compiler output is Z:\b. The longer
+# Projects\Whisper\b folder makes the shader path too long. The installer shelf stays.
 function Remove-OldFolder([string] $dir) {
     if (-not (Test-Path -LiteralPath $dir)) { return }
     cmd /c "attrib -r `"$dir`" /s /d & rmdir /s /q `"$dir`"" | Out-Null
@@ -285,8 +285,8 @@ if ($Prerelease) { $ghArgs += "--prerelease" }
 if ($LASTEXITCODE) { throw "publishing failed" }
 Write-Host "Published $Tag"
 
-# The build above wrote the compiler output to Z:\Projects\Whisper\b. The old drive-root folder can go.
-if ($target -ne "Z:/b" -and $target -ne "Z:\b") { Remove-OldFolder "Z:\b" }
+# The build above wrote the compiler output to Z:\b. The longer folder can go.
+if ($target -eq "Z:/b" -or $target -eq "Z:\b") { Remove-OldFolder "Z:\Projects\Whisper\b" }
 
 # Keep a copy next to the older installers when that folder is on this PC.
 $shelf = "Z:\Projects\Whisper\installer"

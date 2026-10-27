@@ -1,8 +1,9 @@
 # Build settings for Windows. Adjust the paths below to where these tools are installed on your PC.
 [build]
-# Short name on purpose. Z:/Projects/Whisper/build made the Vulkan shader paths
-# longer than Windows allows, so the compiler output is this one-letter folder.
-target-dir = "Z:/Projects/Whisper/b"
+# Z: is the network folder \\10.1.20.4\Ai Projects. Windows counts that full
+# name, and a folder name can be at most 248 characters. Under Projects\Whisper
+# the shader tool lands at 253, so the compiler output is the short folder Z:/b.
+target-dir = "Z:/b"
 
 [env]
 VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"
