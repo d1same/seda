@@ -57,6 +57,10 @@ $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
 $env:TAURI_SIGNING_PRIVATE_KEY = $key
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 $env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~ --remap-path-prefix=$root=seda"
+# The Vulkan shader try-compile path is still too long for MSBuild's file tracker.
+$env:TrackFileAccess = "false"
+$env:CMAKE_C_FLAGS = "/FS /DWIN32 /D_WINDOWS"
+$env:CMAKE_CXX_FLAGS = "/FS /DWIN32 /D_WINDOWS /GR /EHsc"
 Push-Location $root
 # npm/cargo print progress on stderr; Windows PowerShell would treat that as a failure, so rely on exit codes.
 $ErrorActionPreference = "Continue"

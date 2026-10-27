@@ -8,3 +8,9 @@ target-dir = "Z:/Projects/Whisper/b"
 VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"
 CMAKE = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe"
 LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
+# MSBuild's file tracker still dies on the Vulkan try-compile path (FTK1011)
+# even in this short folder. Turning tracking off is the fix whisper-rs documents.
+# /FS stops the parallel compile from fighting over one .pdb once tracking is off.
+TrackFileAccess = "false"
+CMAKE_C_FLAGS = "/FS /DWIN32 /D_WINDOWS"
+CMAKE_CXX_FLAGS = "/FS /DWIN32 /D_WINDOWS /GR /EHsc"
