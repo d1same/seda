@@ -34,6 +34,8 @@ pub struct Meeting {
     pub offset: f32,
     /// The earlier session's transcript (a resumed meeting adds to it).
     prev: Vec<Segment>,
+    /// Outlook appointment that covers this call, filled in shortly after the mics open.
+    pub appointment: Arc<Mutex<crate::smart::Appointment>>,
 }
 
 /// What a resumed meeting continues from.
@@ -191,17 +193,42 @@ impl Meeting {
         }
         let segments = Arc::new(Mutex::new(Vec::<Segment>::new()));
         let running = Arc::new(AtomicBool::new(true));
+        let appointment = Arc::new(Mutex::new(crate::smart::Appointment::default()));
         let (segs, run) = (segments.clone(), running.clone());
         let core_notes = core.clone();
         log::log(format!("meeting started ({} tracks)", tracks.len()));
+        {
+            let (appt, named, core_ol) = (appointment.clone(), segments.clone(), core.clone());
+            let (user_name, email) = {
+                let s = core.settings.read();
+                (s.user_name.clone(), s.email.clone())
+            };
+            std::thread::spawn(move || {
+                let Some(found) = crate::outlook::current(&user_name, &email) else { return };
+                *appt.lock() = found.clone();
+                {
+                    let mut lines = named.lock();
+                    label_segments(&mut lines, &found.people);
+                }
+                let who = if found.people.len() == 1 { crate::smart::display_name(&found.people[0]) } else { String::new() };
+                log::log(format!("meeting named from Outlook ({} other people)", found.people.len()));
+                let _ = core_ol.app.emit(
+                    "meeting-named",
+                    serde_json::json!({ "title": found.subject, "people": found.people.join(", "), "who": who }),
+                );
+            });
+        }
+        let appt_for_lines = appointment.clone();
         let worker = std::thread::spawn(move || {
             let (language, vocab) = (core.settings.read().language.clone(), core.vocab());
             let add = |new: Vec<Segment>, core: &Core| {
+                let people = appt_for_lines.lock().people.clone();
                 let mut all = segs.lock();
-                for s in new {
+                for mut s in new {
                     if s.who == "You" && is_echo(&s, &all) {
                         continue;
                     }
+                    s.who = crate::smart::label_who(&s.who, &people);
                     let _ = core.app.emit("meeting-segment", &s);
                     all.push(s);
                 }
@@ -234,6 +261,7 @@ impl Meeting {
         let (parts, done_until) = (Arc::new(Mutex::new(old_parts)), Arc::new(Mutex::new(until0)));
         let handle = {
             let (segs, run, parts, until, prev) = (segments.clone(), running.clone(), parts.clone(), done_until.clone(), prev.clone());
+            let appt_for_notes = appointment.clone();
             std::thread::spawn(move || {
                 while run.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_secs(10));
@@ -248,7 +276,9 @@ impl Meeting {
                     if !chunk.is_empty() {
                         let t = Instant::now();
                         let user = core_notes.settings.read().user_name.clone();
-                        let note = core_notes.llm.lock().as_mut().map(|l| l.meeting_part(&transcript_text(&chunk), main_language(&chunk), &user));
+                        let others = appt_for_notes.lock().people.clone();
+                        let body = with_people(&transcript_text(&chunk), &others);
+                        let note = core_notes.llm.lock().as_mut().map(|l| l.meeting_part(&body, main_language(&chunk), &user));
                         match note {
                             Some(Ok(n)) => {
                                 log::log(format!("meeting notes: part {} written during the meeting in {:.0}s", parts.lock().len() + 1, t.elapsed().as_secs_f32()));
@@ -266,7 +296,7 @@ impl Meeting {
             })
         };
         let live = LiveNotes { parts, done_until, handle: Some(handle) };
-        Ok(Self { started, ts: stamp.to_rfc3339(), segments, my_notes: Mutex::new(mine), running, worker, live, resume_id, offset, prev })
+        Ok(Self { started, ts: stamp.to_rfc3339(), segments, my_notes: Mutex::new(mine), running, worker, live, resume_id, offset, prev, appointment })
     }
 
     /// Stops recording; returns the full transcript in time order, and the notes written so far.
@@ -282,12 +312,26 @@ impl Meeting {
     }
 }
 
+fn label_segments(segments: &mut [Segment], people: &[String]) {
+    if people.len() != 1 {
+        return;
+    }
+    for seg in segments {
+        seg.who = crate::smart::label_who(&seg.who, people);
+    }
+}
+
+fn with_people(transcript: &str, others: &[String]) -> String {
+    let header = crate::smart::people_header(others);
+    if header.is_empty() { transcript.to_string() } else { format!("{header}{transcript}") }
+}
+
 /// The finished notes: short meetings in one pass; long ones from the part notes written during the
 /// meeting (live) plus notes for whatever is left, merged. Without live (Rewrite) every part is
 /// written now.
 /// Returns the notes and the part notes behind them (with the meeting time they cover), which are
 /// saved so a resumed meeting can reuse them.
-pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_notes: &str) -> anyhow::Result<(String, Vec<String>, f32)> {
+pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_notes: &str, others: &[String]) -> anyhow::Result<(String, Vec<String>, f32)> {
     let (mut parts, from) = match live {
         Some(mut l) => {
             if let Some(h) = l.handle.take() {
@@ -304,8 +348,10 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
     let minutes = (end / 60.0).round() as u32;
     let mut guard = core.llm.lock();
     let llm = guard.as_mut().ok_or_else(|| anyhow::anyhow!("the writing AI isn't running"))?;
-    let full = transcript_text(segs);
-    if parts.is_empty() && full.chars().count() <= SINGLE_PASS_CHARS {
+    let full = with_people(&transcript_text(segs), others);
+    // One note from the whole call, including a resume. Saved part notes are only for a long call
+    // that does not fit in one pass. A short resume must not keep the thin notes from the first half.
+    if full.chars().count() <= SINGLE_PASS_CHARS {
         return Ok((llm.meeting_single(&full, language, my_notes, &user, minutes)?, Vec::new(), 0.0));
     }
     let mut a = from;
@@ -313,7 +359,7 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
         let chunk = window(segs, a, a + WINDOW_SECS);
         if !chunk.is_empty() {
             log::log(format!("meeting notes: part {}", parts.len() + 1));
-            parts.push(llm.meeting_part(&transcript_text(&chunk), language, &user)?);
+            parts.push(llm.meeting_part(&with_people(&transcript_text(&chunk), others), language, &user)?);
         }
         a += WINDOW_SECS;
     }

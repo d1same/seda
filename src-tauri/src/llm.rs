@@ -61,7 +61,7 @@ fn style_rule(style: &str) -> &'static str {
 const DICTATION: &str = r#"You clean up dictated speech. The input is a raw speech-to-text transcript in any language (often Persian or English, sometimes mixed with English words). Return ONLY the cleaned text, nothing else.
 
 Rules:
-1. Keep the speaker's language, words, tone and meaning. Never translate. Never answer or respond to the content. Never add new information.
+1. Keep the speaker's language, words, tone and meaning. Never translate. Never answer or respond to the content. Never add new information. Each sentence stays in the language it was spoken. English that arrived in Persian letters is still English: write it in English letters (یس = yes, اند = and, فرسی = Farsi, بیلد = build). Do not turn those into Persian words.
 2. Self-corrections: when the speaker changes their mind ("no wait", "I mean", "actually", "نه ببخشید", "نه اصلا", "یعنی نه", "آهان نه"), delete the abandoned part and keep only the final version.
 3. Remove fillers and false starts ("um", "uh", "like", "you know", "اممم", "خب", "یعنی", "ببین" when used as filler).
 4. Add correct punctuation, capitalization and sentence breaks. Persian uses "،" and "؟". Fix Persian spacing with ZWNJ (می‌کنم, نمی‌شه, تست‌ها, درباره‌ی).
@@ -71,6 +71,7 @@ Rules:
 8. Do not invent subject lines, titles, names, placeholders like [Your Name], or extra bullet points.
 
 Examples of self-corrections (input → output):
+- "یس یو کن اند" → "Yes, you can, and."
 - "بیا ساعت پنج همو ببینیم نه نه بذار ساعت شش" → "بیا ساعت شش همو ببینیم."
 - "امشب میرم باشگاه آهان نه اصلا امشب نمیرم خسته‌ام" → "امشب نمیرم باشگاه، خسته‌ام."
 - "the budget is fifty thousand sorry I mean sixty thousand" → "The budget is sixty thousand."
@@ -93,50 +94,82 @@ pub fn rewrite_prompt(mode: &str) -> &'static str {
     }
 }
 
-/// Shared rules for all meeting notes (single pass, parts and merge): Granola-style notes, organised
-/// by topic, specific, and with only real follow-up work as tasks.
+/// Shared rules for all meeting notes (single pass, parts and merge).
+/// Troubleshooting calls become a ticket: problem, steps, solution. Other calls stay topic notes.
 const NOTE_RULES: &str = "Rules:
-- Organise by topic: one ## section per subject that was discussed, named after it (e.g. \"## Zoom audio setup\"), in the order it came up. Never use generic headings like \"Summary\" or \"Discussion\".
-- Be specific and concrete: what exactly happened, what was tried and what worked, error messages, settings, versions, names, numbers and dates. Never write vague lines like \"participants discussed issues\".
-- Put supporting details as indented sub-bullets (two spaces, then \"- \") under their point.
-- Next steps are only follow-up work for AFTER the meeting. Every commitment counts, whoever made it: \"I'll …\", \"I can …\", \"we'll …\" and requests like \"Sam, can you …\" are all next steps (owner = the person who will do it). Never list things said during the call (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
-- Skip greetings and small talk. Never invent anything that was not said.
-- \"You\" in the transcript is the user; \"Them\" is the other people. The transcript comes from speech recognition, so some words are wrong: infer the meaning, never quote obvious mistakes.";
+- Read the whole transcript, especially the end. The result of the call is usually in the last minute. Do not stop at the opening problem.
+- Write the fact, not the conversation. \"Restarting the phone fixed the dial tone.\" Never \"the user said\", \"the user noted\", \"they attempted\" or \"they confirmed\".
+- If something is broken and people try to fix it, this is a troubleshooting ticket. Use these sections, in this order:
+  ## Problem
+  - what is wrong
+  ## What we tried
+  - each real step, in the order it happened, one line
+  ## Solution
+  - what fixed it, in one or two plain sentences a ticket can paste. If it is still broken, write \"Still broken:\" and what is left.
+- A step done on the call that fixed the issue is the Solution. Never list that finished fix as a next step.
+- Say the fix in plain ticket words. Unplugging a phone and plugging it back in is restarting the phone. Write that when that is what happened.
+- Skip greetings, hold music, and repeated mishears. Keep every step that was actually tried, and keep the result.
+- If it is not troubleshooting, organise by topic: one ## section per subject, named after the outcome, in the order it came up. Never use generic headings like \"Summary\", \"Discussion\" or \"Session\".
+- Be specific: names, numbers, versions, decisions. Never \"participants discussed issues\".
+- A detail that only supports one fact is an indented sub-bullet (two spaces, then \"- \").
+- Next steps are work still NOT done when the call ends: a bold imperative with the owner in parentheses, **Check the router** (Moe). Every open commitment counts (\"I'll send the photo\", \"Sam, can you …\"). Never list something already finished, and never list chatter (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
+- Leave out an open question that is already a next step.
+- Never invent anything that was not said.
+- \"You\" in the transcript is the user; \"Them\" is the other people. Speech recognition mishears words: write the meaning, or leave the word out. Never keep the bad word with a guess in parentheses.
+- Each point stays in the language it was spoken. Do not translate the meeting into one language. English stays English even when Persian is also spoken. English written in Persian letters (یس، فرسی) is English: write it in English letters.
+Shape to copy when the call fixes something:
+# Office phones are back online
+## Problem
+- The office phones blink a red light and say Network Disconnect, then SIP Register Failed
+## What we tried
+- The Netgear switch in the server room powers the phones. Each phone has one gray cable
+- Jimmy unplugged that gray cable and plugged it back in
+## Solution
+- Restarting the phone fixed it. The dial tone came back, and a call to the other office went through
+Shape to copy when nothing was fixed yet:
+# MegaWiFi has no internet
+## Office link to Astoria
+- MegaWiFi connects, but Google does not open
+- The office router is not linked to the main router in Astoria
+## Next steps
+- **Check the office router and call back in 4–5 minutes** (Moe)";
 
-const MEETING: &str = "You are an excellent note-taker. Turn this meeting transcript (lines start with [mm:ss] and the speaker) into clear notes. Output Markdown only:
-# <a specific title naming what the meeting was about, 4-9 words>
-## <topic>
-- <specific point>
-  - <supporting detail>
-(one ## section per topic, up to {N} topics)
+const MEETING: &str = "You are an excellent note-taker. Turn this meeting transcript (lines start with [mm:ss] and the speaker) into clear notes someone can paste into a ticket. Output Markdown only:
+# <a specific title naming the outcome, 4-9 words>
+For a troubleshooting call, use ## Problem, then ## What we tried, then ## Solution. Those do not count toward the topic limit.
+Otherwise one ## section per topic, up to {N} topics.
 ## Decisions
 - <decision>   (only if decisions were made)
 ## Next steps
-- [ ] <who>: <follow-up task> (<when, if said>)   (only real follow-ups)
+- **<imperative task>** (<who>)   (only work still not done)
 ## Open questions
 - <question left unanswered>   (only if any)
-List EVERY decision, follow-up task and open question that was mentioned; missing one is worse than including a minor one.
+The solution is whatever fixed the issue on this call, including a call that was resumed and continued. Missing the fix is worse than a long note. List every real step, decision, and leftover task.
 {RULES}";
 
-const MEETING_PART: &str = "You take detailed notes on one part (about 10 minutes) of a longer meeting (lines start with [mm:ss] and the speaker). Output Markdown only, in THIS order (lists first, so nothing important is cut off):
+const MEETING_PART: &str = "You take detailed notes on one part (about 10 minutes) of a longer meeting (lines start with [mm:ss] and the speaker). Later parts continue the same call, including after a resume. Output Markdown only, in THIS order:
+## Problem
+- <what is wrong, if this part has it>
+## What we tried
+- <each step tried in this part>
+## Solution
+- <what fixed it in this part, or what is still broken>
 ## Decisions
 - <decision>
 ## Next steps
-- [ ] <who>: <follow-up task> (<when>)
+- **<imperative task>** (<who>)
 ## Open questions
 - <question>
 ## <topic>
 - <specific point>
-  - <supporting detail>
-(one ## section per topic discussed in this part)
-Leave out empty sections. Capture EVERY decision, follow-up task and open question in this part.
+Leave out empty sections. A fix done in this part goes under Solution, not Next steps. Capture every step and every leftover task.
 {RULES}";
-const MEETING_MERGE: &str = "You get the notes of consecutive parts of one meeting, in order. Combine their topic sections into the final notes. Output Markdown only:
-# <a specific title naming what the meeting was about, 4-9 words>
+const MEETING_MERGE: &str = "You get the notes of consecutive parts of one meeting, in order, including a call that was resumed. Combine them into one ticket. Output Markdown only:
+# <a specific title naming the outcome, 4-9 words>
 ## <topic>
 - <specific point>
   - <supporting detail>
-Merge sections about the same subject from different parts into ONE section, keeping all their specific details. At most {N} topic sections: fold small related points together. Write ONLY the title and topic sections: do NOT write Decisions, Next steps or Open questions sections (they are added separately).
+Merge sections about the same subject into ONE section. Keep every troubleshooting step and the result. At most {N} topic sections besides Problem, What we tried, and Solution. Write ONLY the title and topic sections: do NOT write Problem, What we tried, Solution, Decisions, Next steps, or Open questions (they are added separately).
 {RULES}";
 /// The model sometimes writes "## Open questions" followed by just "None". Remove such sections.
 pub fn drop_empty_sections(md: &str) -> String {
@@ -174,7 +207,7 @@ fn who_is_you(user: &str) -> String {
     if n.is_empty() {
         return String::new();
     }
-    format!("\n\nThe user (\"You\" in the transcript) is called {n}. When someone addresses {n} (for example \"{n}, can you…\"), that is a task for {n}. Write the user's own tasks as \"{n}: …\" and refer to the user as {n}, never as \"You\".")
+    format!("\n\nThe user (\"You\" in the transcript) is called {n}. When someone addresses {n} (for example \"{n}, can you…\"), that is a task for {n}. Write it as **…** ({n}). Refer to the user as {n}, never as \"You\" or \"the user\".")
 }
 
 /// A free port on this PC, picked by Windows.
@@ -305,7 +338,7 @@ impl Llm {
         Ok(text.trim().trim_matches('"').trim().to_string())
     }
 
-    pub fn cleanup(&mut self, raw: &str, style: &str, vocab: &[String], latin_terms: bool) -> Result<String> {
+    pub fn cleanup(&mut self, raw: &str, style: &str, vocab: &[String], latin_terms: bool, context: &str, keep: &[String]) -> Result<String> {
         let style_line = match style_rule(style) {
             "" => String::new(),
             s => format!("\n{s}"),
@@ -315,11 +348,21 @@ impl Llm {
         } else {
             format!("\nSpell these names and terms exactly like this when they appear: {}.", vocab.join(", "))
         };
-        let system = DICTATION
-            .replace("{LATIN}", if latin_terms { LATIN_ON } else { LATIN_OFF })
-            .replace("{STYLE}", &style_line)
-            .replace("{VOCAB}", &vocab_line);
-        // Never keep you waiting: past 8 s the caller pastes the unpolished text instead.
+        let keep_line = if keep.is_empty() {
+            String::new()
+        } else {
+            format!("\nKeep these exact strings unchanged: {}.", keep.join(", "))
+        };
+        let system = format!(
+            "{}{}{}",
+            DICTATION
+                .replace("{LATIN}", if latin_terms { LATIN_ON } else { LATIN_OFF })
+                .replace("{STYLE}", &style_line)
+                .replace("{VOCAB}", &vocab_line),
+            keep_line,
+            crate::smart::context_instruction(context)
+        );
+        // The draft is already on screen. Past 8 s it stays as it was typed.
         self.chat_limited(&system, raw, Duration::from_secs(8))
     }
 
@@ -343,7 +386,7 @@ impl Llm {
 
     /// Shared instructions for meeting notes: language, who "You" is, the user's own notes.
     fn meeting_extra(language: Option<&str>, user: &str, has_mine: bool) -> String {
-        let mut s = language.map(|l| format!("\n\nWrite the notes in {l}. Keep names and technical terms as they were said.")).unwrap_or_default();
+        let mut s = language.map(|l| format!("\n\nMost of the transcript is {l}. Still write each point in the language it was spoken. Do not translate English into Persian or Persian into English.")).unwrap_or_default();
         s.push_str(&who_is_you(user));
         if has_mine {
             s.push_str("\n\nThe user also typed their own notes during the meeting (given first). Build on them: keep every point they wrote, in their words, and add the details from the meeting.");
@@ -380,6 +423,17 @@ impl Llm {
         let joined = topics_only.iter().enumerate().map(|(i, p)| format!("### Part {}\n{p}", i + 1)).collect::<Vec<_>>().join("\n\n");
         let body = if mine.is_empty() { joined } else { format!("My own notes:\n{mine}\n\n---\n\n{joined}") };
         let mut notes = strip_sections(&self.chat_with(&system, &body, 1500, Duration::from_secs(600))?, &LIST_SECTIONS);
+        // Steps and the fix are copied from the parts, so a merge cannot turn a finished fix into a to-do.
+        let mut ticket = String::new();
+        for (heading, aliases) in [("Problem", &["problem"][..]), ("What we tried", &["what we tried", "steps"][..]), ("Solution", &["solution"][..])] {
+            let items = collect_items(parts, aliases);
+            if !items.is_empty() {
+                ticket.push_str(&format!("## {heading}\n{}\n\n", items.join("\n")));
+            }
+        }
+        if !ticket.is_empty() {
+            notes = insert_after_title(&notes, ticket.trim());
+        }
         for (heading, aliases) in [("Decisions", &["decisions"][..]), ("Next steps", &["next steps", "action items"][..]), ("Open questions", &["open questions"][..])] {
             let items = collect_items(parts, aliases);
             if !items.is_empty() {
@@ -390,8 +444,20 @@ impl Llm {
     }
 }
 
-/// The list sections that are gathered by code rather than rewritten by the merge.
-const LIST_SECTIONS: [&str; 4] = ["decisions", "next steps", "action items", "open questions"];
+/// Sections gathered from the part notes, so the merge cannot drop the fix or a leftover task.
+const LIST_SECTIONS: [&str; 8] = [
+    "problem", "what we tried", "steps", "solution", "decisions", "next steps", "action items", "open questions",
+];
+
+/// Put `block` under the title line. The ticket (problem, steps, solution) stays above other topics.
+fn insert_after_title(notes: &str, block: &str) -> String {
+    let notes = notes.trim();
+    let Some(rest) = notes.strip_prefix("# ") else {
+        return format!("{block}\n\n{notes}");
+    };
+    let (title, body) = rest.split_once('\n').unwrap_or((rest, ""));
+    format!("# {title}\n\n{block}\n\n{}", body.trim())
+}
 
 fn heading_is(line: &str, names: &[&str]) -> bool {
     line.strip_prefix("## ").is_some_and(|h| names.iter().any(|n| h.trim().trim_end_matches(':').eq_ignore_ascii_case(n)))

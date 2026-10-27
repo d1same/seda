@@ -14,6 +14,8 @@ const clock = (s: number) => {
 const mins = (s: number) => (s < 60 ? "<1 min" : `${Math.round(s / 60)} min`);
 const hhmm = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const IDLE: MeetingStatus = { running: false, secs: 0, segments: [], my_notes: "" };
+const peopleLabel = (people?: string) => (people || "").split(" | ").map((s) => s.trim()).filter(Boolean).join(", ");
+const meetingName = (m: { title: string; cal?: string }) => m.title.trim() || m.cal?.trim() || "Writing notes…";
 const SUGGESTIONS = ["What did I agree to do?", "Write a follow-up email", "Make it shorter", "Translate to English"];
 
 /** Just enough Markdown for the notes the AI writes: ## headings, bullets, [ ] tasks, **bold**. */
@@ -160,7 +162,8 @@ function MeetingDoc({ id, back, me }: { id: number; back: () => void; me: string
       <div className="mdoc-meta">{dayOf(m.ts)} · {hhmm(m.ts)} · {mins(m.secs)}</div>
       {editing
         ? <input className="title-edit" dir="auto" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
-        : <h1 className="mdoc-title" dir="auto">{writing ? "Writing notes…" : m.title}</h1>}
+        : <h1 className="mdoc-title" dir="auto">{meetingName(m)}</h1>}
+      {peopleLabel(m.people) && <div className="mdoc-people" dir="auto">{peopleLabel(m.people)}</div>}
 
       <div className="mtabs">
         <button className={tab === "notes" ? "on" : ""} onClick={() => setTab("notes")}>Notes</button>
@@ -201,7 +204,8 @@ function LiveDoc({ st, stop, busy, me }: { st: MeetingStatus; stop: () => void; 
         <IconButton icon="check" label={busy ? "Finishing…" : "Stop & write notes"} primary disabled={busy} onClick={stop} />
       </div>
       <div className="mdoc-meta">{st.resuming ? "Continuing · " : `Today · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · `}recording you and the call</div>
-      <h1 className="mdoc-title" dir="auto">{st.resuming || "New meeting"}</h1>
+      <h1 className="mdoc-title" dir="auto">{st.title || st.resuming || "New meeting"}</h1>
+      {peopleLabel(st.people) && <div className="mdoc-people" dir="auto">{peopleLabel(st.people)}</div>}
       <textarea className="notepad" dir="auto" autoFocus value={mine} onChange={(e) => change(e.target.value)} placeholder="Write notes… (optional — Seda builds the final notes on them)" />
 
       <div className="live-dock">
@@ -235,6 +239,12 @@ export default function Meetings({ me }: { me: string }) {
     const un = [
       on("meetings-changed", loadList),
       on<Segment>("meeting-segment", (s) => setSt((p) => ({ ...p, segments: [...p.segments, s] }))),
+      on<{ title: string; people: string; who: string }>("meeting-named", (n) => setSt((p) => ({
+        ...p,
+        title: n.title || p.title,
+        people: n.people || p.people,
+        segments: n.who ? p.segments.map((s) => (s.who === "Them" ? { ...s, who: n.who } : s)) : p.segments,
+      }))),
       on<boolean>("meeting-state", () => api.meetingStatus().then(setSt)),
     ];
     return () => un.forEach((f) => f());
@@ -247,7 +257,9 @@ export default function Meetings({ me }: { me: string }) {
 
   const start = async () => {
     setErr("");
-    try { await api.meetingStart(); setSt({ ...IDLE, running: true }); } catch (e) { setErr(String(e)); }
+    // Opening the mic takes a second or two. Show the live meeting on this click.
+    setSt({ ...IDLE, running: true });
+    try { await api.meetingStart(); } catch (e) { setSt(IDLE); setErr(String(e)); }
   };
   const stop = async () => {
     setBusy(true);
@@ -261,8 +273,13 @@ export default function Meetings({ me }: { me: string }) {
   if (st.running) return <LiveDoc st={st} stop={stop} busy={busy} me={me} />;
   if (openId !== null) return <MeetingDoc key={openId} id={openId} me={me} back={() => { setOpenId(null); loadList(); }} />;
 
-  const needle = q.trim().toLowerCase();
-  const shown = needle ? list.filter((m) => m.title.toLowerCase().includes(needle)) : list;
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = words.length
+    ? list.filter((m) => {
+        const hay = (m.search || [m.title, m.people, m.cal].filter(Boolean).join("\n")).toLowerCase();
+        return words.every((w) => hay.includes(w));
+      })
+    : list;
   const days: [string, Meeting[]][] = [];
   for (const m of shown) {
     const d = dayOf(m.ts);
@@ -281,14 +298,15 @@ export default function Meetings({ me }: { me: string }) {
         Seda records you and the call, transcribes as it goes, and writes the notes when it ends.
       </Head>
       {err && <div className="notice err">{err}</div>}
-      {list.length > 3 && <input className="field m-search" dir="auto" placeholder="Search meetings…" value={q} onChange={(e) => setQ(e.target.value)} />}
+      {list.length > 0 && <input className="field m-search" dir="auto" placeholder="Search meetings, people, or what was said…" value={q} onChange={(e) => setQ(e.target.value)} />}
+      {shown.length === 0 && list.length > 0 && <div className="empty"><div className="big">No matches.</div>Try a name, the calendar subject, or a word that was said.</div>}
       {days.map(([day, ms]) => (
         <div key={day}>
           <div className="label day-label">{day}</div>
           {ms.map((m) => (
             <button key={m.id} className={`mrow ${sel.on && sel.has(m.id) ? "picked" : ""}`} onClick={() => (sel.on ? sel.toggle(m.id) : setOpenId(m.id))}>
               {sel.on && <Tick on={sel.has(m.id)} />}
-              <span className="ttl" dir="auto">{m.title || "Writing notes…"}</span>
+              <span className="ttl" dir="auto">{meetingName(m)}{peopleLabel(m.people) && <span className="who-bit"> · {peopleLabel(m.people)}</span>}</span>
               <span className="faint">{hhmm(m.ts)} · {mins(m.secs)}</span>
             </button>
           ))}

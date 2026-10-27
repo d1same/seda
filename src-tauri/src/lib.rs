@@ -4,7 +4,9 @@ mod detect;
 mod hotkey;
 mod llm;
 mod meeting;
+mod outlook;
 mod settings;
+mod smart;
 mod store;
 mod log;
 mod setup;
@@ -33,9 +35,13 @@ pub struct Status {
 
 #[derive(Serialize, Clone)]
 struct PillState {
-    state: &'static str, // listening | transcribing | polishing | done | empty | error | cancelled
+    state: &'static str, // listening | transcribing | polishing | done | empty | error | cancelled | idle | hidden
     app: String,
     message: String,
+    /// "dot" = the round button (click to dictate, drag to move). "pill" = the status capsule.
+    shape: &'static str,
+    /// Clicking this capsule stops the recording and pastes it. Used when the desktop icon started it.
+    click_stop: bool,
 }
 
 struct ActiveRec {
@@ -46,6 +52,8 @@ struct ActiveRec {
     /// The window in front when recording started (where the text will be pasted).
     target: isize,
     live: Arc<Mutex<LiveText>>,
+    /// Text already in that window, read when recording started.
+    context: Arc<Mutex<String>>,
 }
 
 /// Text transcribed while you were still talking: everything up to sample `done` (16 kHz).
@@ -70,12 +78,21 @@ struct CallState {
     /// The meeting was started for this call, so it stops by itself when the call ends.
     linked: Option<&'static str>,
     gone_since: Option<Instant>,
+    /// The mic and speakers are still opening. The card already says notes are starting,
+    /// and this poll must not hide it or ask again until that open finishes.
+    starting: bool,
 }
 
-/// Pop-up sizes (logical px): working capsule, capsule with a message, idle logo.
+/// Pop-up sizes (logical px): listening capsule, capsule with words, idle circle.
 const PILL: (f64, f64) = (148.0, 30.0);
-const PILL_WIDE: (f64, f64) = (300.0, 30.0);
-const PILL_IDLE: (f64, f64) = (22.0, 22.0);
+const PILL_TEXT: (f64, f64) = (420.0, 30.0);
+const PILL_IDLE: (f64, f64) = (48.0, 48.0);
+
+/// The idle circle is a small square. The status capsule is a wide short bar, so a late clip
+/// can tell them apart and will not turn the capsule into a disc.
+fn small_square(width: i32, height: i32) -> bool {
+    width >= 8 && height >= 8 && width < 220 && (width - height).abs() <= 4
+}
 
 pub struct Core {
     app: AppHandle,
@@ -87,6 +104,10 @@ pub struct Core {
     rec: Mutex<Option<ActiveRec>>,
     recording: Arc<AtomicBool>,
     pill_gen: AtomicU64,
+    /// This dictation was started from the on-screen circle, so the circle stays put and a second click stops it.
+    from_dot: AtomicBool,
+    /// Bumps on every paste, so a slow cleanup cannot type over a newer dictation.
+    paste_seq: AtomicU64,
     fix: Mutex<Option<FixSession>>,
     mic_test: Mutex<Option<audio::Recording>>,
     meeting: Mutex<Option<meeting::Meeting>>,
@@ -218,17 +239,12 @@ impl Core {
             "transcribing" | "polishing" => self.set_tray("busy"),
             _ => self.tray_idle(),
         }
-        let _ = self.app.emit_to("pill", "pill", PillState { state, app: app.to_string(), message });
+        // A click on the desktop icon starts the same capsule the shortcut uses.
+        // That capsule accepts one more click to stop and paste, because there is no key to release.
+        let click_stop = state == "listening" && self.from_dot.load(Ordering::SeqCst);
+        let _ = self.app.emit_to("pill", "pill", PillState { state, app: app.to_string(), message, shape: "pill", click_stop });
         if let Some(w) = self.app.get_webview_window("pill") {
-            // Compact capsule while working; wider only when there's a message to read.
-            let wide = matches!(state, "error" | "empty");
-            let size = if wide { PILL_WIDE } else { PILL };
-            if self.shape_pill(&w, size) || state == "listening" {
-                self.place_pill(&w, size);
-            }
-            if let Ok(h) = w.hwnd() {
-                win::show_no_activate(h.0 as isize);
-            }
+            self.present_pill(&w, state, false);
         }
         let linger = match state {
             "done" => Some(1600),
@@ -248,18 +264,19 @@ impl Core {
         }
     }
 
-    /// Back to idle: either a small translucent dot (if the user wants one) or nothing at all.
+    /// Back to idle: either the circle (if the user wants one) or nothing at all.
+    /// `generation` is the pill update this rest belongs to. A newer update (a click that
+    /// already started dictation) wins, so a late rest cannot cover the listening circle.
     fn rest_pill(&self, generation: u64) {
+        if self.pill_gen.load(Ordering::SeqCst) != generation {
+            return;
+        }
         let Some(w) = self.app.get_webview_window("pill") else { return };
         let dot = self.settings.read().idle_dot;
         let state = if dot { "idle" } else { "hidden" };
-        let _ = self.app.emit_to("pill", "pill", PillState { state, app: String::new(), message: String::new() });
+        let _ = self.app.emit_to("pill", "pill", PillState { state, app: String::new(), message: String::new(), shape: "dot", click_stop: false });
         if dot {
-            self.shape_pill(&w, PILL_IDLE);
-            self.place_pill(&w, PILL_IDLE);
-            if let Ok(h) = w.hwnd() {
-                win::show_no_activate(h.0 as isize);
-            }
+            self.present_pill(&w, "idle", true);
             return;
         }
         std::thread::sleep(Duration::from_millis(220)); // let the exit animation play
@@ -270,10 +287,90 @@ impl Core {
         }
     }
 
-    /// The pill window is a plain, solid window exactly the size of what it shows (the capsule, or
-    /// just the small idle logo), with native rounded corners: nothing transparent, nothing clipped.
+    /// Show the pill window as either the round button (`dot`) or the status capsule.
+    /// The circle accepts clicks and stays where the user dragged it. The capsule lets clicks through.
+    fn present_pill(&self, w: &tauri::WebviewWindow, state: &str, dot: bool) {
+        let wide = matches!(state, "error" | "empty" | "done" | "polishing");
+        let size = if dot { PILL_IDLE } else if wide { PILL_TEXT } else { PILL };
+        let generation = self.pill_gen.load(Ordering::SeqCst);
+        let resized = self.shape_pill(w, size, dot);
+        if dot {
+            self.place_idle_dot(w);
+        } else if resized || state == "listening" {
+            self.place_pill(w, size);
+        }
+        if let Ok(h) = w.hwnd() {
+            let hwnd = h.0 as isize;
+            // The idle icon takes clicks. So does a capsule that the icon started, so a second
+            // click can stop and paste. A shortcut capsule stays click-through.
+            let click_stop = !dot && state == "listening" && self.from_dot.load(Ordering::SeqCst);
+            win::make_overlay(hwnd, !dot && !click_stop);
+            // set_size finishes on the next window message, so the size we asked for may not be
+            // the size on screen yet. Clip to the real window once it is a small square.
+            // No hard window outline. A GDI clip is a jagged edge; the icon's own
+            // anti-aliased corners are what should show, with the desktop in the rest.
+            win::clip_icon(hwnd, false, 0, 0);
+            win::show_no_activate(hwnd);
+        }
+        if dot {
+            // A resize can clear the clip and leave the light square frame. Put the disc back
+            // once the new size has landed, and skip it if a newer update already showed the capsule.
+            let app = self.app.clone();
+            std::thread::spawn(move || {
+                for delay in [50u64, 150] {
+                    std::thread::sleep(Duration::from_millis(delay));
+                    let core = app.state::<Arc<Core>>().inner().clone();
+                    if core.pill_gen.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
+                    let Some(win) = app.get_webview_window("pill") else { return };
+                    let Ok(outer) = win.outer_size() else { return };
+                    let width = outer.width as i32;
+                    let height = outer.height as i32;
+                    if !small_square(width, height) {
+                        continue;
+                    }
+                    let Ok(h) = win.hwnd() else { return };
+                    let hwnd = h.0 as isize;
+                    win::round_corners(hwnd, false);
+                    win::clear_dark_corners(hwnd);
+                    win::clip_icon(hwnd, false, 0, 0);
+                }
+            });
+        }
+    }
+
+    /// The circle's saved spot, or the bottom centre the first time.
+    fn place_idle_dot(&self, w: &tauri::WebviewWindow) {
+        let (x, y) = {
+            let s = self.settings.read();
+            (s.dot_x, s.dot_y)
+        };
+        if let (Some(x), Some(y)) = (x, y) {
+            if self.point_on_screen(x, y) {
+                let _ = w.set_position(PhysicalPosition::new(x, y));
+                return;
+            }
+        }
+        self.place_pill(w, PILL_IDLE);
+    }
+
+    fn point_on_screen(&self, x: i32, y: i32) -> bool {
+        let Ok(monitors) = self.app.available_monitors() else { return false };
+        monitors.into_iter().any(|m| {
+            // Full screen, not the work area: the taskbar is a normal place to leave the circle.
+            // 200px of slack keeps a circle that hangs off an edge.
+            let p = m.position();
+            let s = m.size();
+            x > p.x - 200 && y > p.y - 200 && x < p.x + s.width as i32 + 200 && y < p.y + s.height as i32 + 200
+        })
+    }
+
+    /// The pill window is a plain window exactly the size of what it shows (the capsule, or the
+    /// idle icon). The capsule gets native rounded corners. The icon does not, and it leaves
+    /// dark mode, so the corners outside the mark stay clear instead of turning white.
     /// Returns true when the size changed (the caller then re-centres it).
-    fn shape_pill(&self, w: &tauri::WebviewWindow, (width, height): (f64, f64)) -> bool {
+    fn shape_pill(&self, w: &tauri::WebviewWindow, (width, height): (f64, f64), dot: bool) -> bool {
         let changed = w
             .inner_size()
             .ok()
@@ -282,8 +379,19 @@ impl Core {
         // Always (re)set: it also makes the page fill the window after its frame was removed,
         // otherwise a light strip of bare window shows around the pill.
         let _ = w.set_size(tauri::LogicalSize::new(width, height));
+        // Alpha 0 lets the desktop show through the icon's corners. The capsule stays solid.
+        let _ = w.set_background_color(Some(tauri::window::Color(
+            if dot { 0 } else { 0x14 },
+            if dot { 0 } else { 0x12 },
+            if dot { 0 } else { 0x10 },
+            if dot { 0 } else { 255 },
+        )));
         if let Ok(h) = w.hwnd() {
-            win::round_corners(h.0 as isize);
+            let hwnd = h.0 as isize;
+            win::round_corners(hwnd, !dot);
+            if dot {
+                win::clear_dark_corners(hwnd);
+            }
         }
         changed
     }
@@ -318,10 +426,13 @@ impl Core {
         match ev {
             HotkeyEvent::DictateDown => {
                 if self.rec.lock().is_some() {
-                    if mode != "hold" {
+                    // Hold mode ignores a second press. A circle-started session is click-to-toggle,
+                    // so the shortcut stops it too.
+                    if mode != "hold" || self.from_dot.load(Ordering::SeqCst) {
                         self.finish();
                     }
                 } else {
+                    self.from_dot.store(false, Ordering::SeqCst);
                     self.begin();
                 }
             }
@@ -334,6 +445,7 @@ impl Core {
                 }
             }
             HotkeyEvent::Cancel => {
+                self.from_dot.store(false, Ordering::SeqCst);
                 let taken = self.rec.lock().take(); // release the lock before pill() reads it again
                 if let Some(r) = taken {
                     self.recording.store(false, Ordering::SeqCst);
@@ -347,8 +459,20 @@ impl Core {
         }
     }
 
+    /// Click on the desktop icon: start the regular dictation capsule, or stop one this icon started.
+    fn dot_click(self: &Arc<Self>) {
+        log::log("dot click");
+        if self.rec.lock().is_some() {
+            self.finish();
+        } else {
+            self.from_dot.store(true, Ordering::SeqCst);
+            self.begin();
+        }
+    }
+
     fn begin(self: &Arc<Self>) {
         if self.asr.read().is_none() {
+            self.from_dot.store(false, Ordering::SeqCst);
             let msg = match self.status.lock().asr.as_str() {
                 "error" => "Speech model failed to load — open Seda",
                 _ => "Speech model is still loading…",
@@ -363,14 +487,25 @@ impl Core {
             Ok(rec) => {
                 let app_name = win::friendly_app_name(&exe, &title);
                 let live = Arc::new(Mutex::new(LiveText::default()));
-                *self.rec.lock() = Some(ActiveRec { rec, started: Instant::now(), exe, title, target, live: live.clone() });
+                let context = Arc::new(Mutex::new(String::new()));
+                *self.rec.lock() = Some(ActiveRec { rec, started: Instant::now(), exe, title, target, live: live.clone(), context: context.clone() });
                 self.recording.store(true, Ordering::SeqCst);
                 hotkey::set_recording(true);
                 self.pill("listening", &app_name, "");
                 self.spawn_level_meter();
                 self.spawn_live_transcriber(live);
+                std::thread::spawn(move || {
+                    let text = win::text_before_caret(500);
+                    if !text.trim().is_empty() {
+                        log::log(format!("read {} chars already in the box", text.chars().count()));
+                    }
+                    *context.lock() = text;
+                });
             }
-            Err(e) => self.pill("error", "", format!("Microphone: {e}")),
+            Err(e) => {
+                self.from_dot.store(false, Ordering::SeqCst);
+                self.pill("error", "", format!("Microphone: {e}"));
+            }
         }
     }
 
@@ -401,24 +536,49 @@ impl Core {
                 if l.done >= snap.len() {
                     continue;
                 }
-                let tail = &snap[l.done..];
-                let asr = me.asr.read();
-                let Some(asr) = asr.as_ref() else { break };
-                if let Some(cut) = asr.pause_cut(tail) {
+                let from = l.done;
+                // The speech lock is released before the capsule updates. Finishing still waits:
+                // this loop holds `l` until the chunk is done.
+                let step = {
+                    let guard = me.asr.read();
+                    let Some(asr) = guard.as_ref() else { break };
+                    // `cut` counts samples from `from`, the start of this tail.
+                    let Some(cut) = asr.pause_cut(&snap[from..]) else { continue };
                     let t = Instant::now();
-                    if let Ok(text) = asr.transcribe(&tail[..cut], &language, &vocab) {
-                        log::log(format!("live chunk {:.1}s → {} ms", cut as f32 / audio::RATE as f32, t.elapsed().as_millis()));
-                        if !text.trim().is_empty() {
-                            l.parts.push(text);
-                        }
+                    let spoken = asr.transcribe(&snap[from..from + cut], &language, &vocab);
+                    (cut, t.elapsed(), spoken)
+                };
+                let (cut, took, spoken) = step;
+                l.done += cut;
+                if let Ok(text) = spoken {
+                    log::log(format!("live chunk {:.1}s → {} ms", cut as f32 / audio::RATE as f32, took.as_millis()));
+                    if !text.trim().is_empty() {
+                        l.parts.push(text);
+                        let shown = l.parts.join(" ");
+                        drop(l);
+                        me.show_live(&shown);
                     }
-                    l.done += cut;
                 }
             }
         });
     }
 
+    /// Words already heard, shown on the capsule while the key is still held.
+    fn show_live(&self, text: &str) {
+        let shown = smart::clip(text.trim(), 80);
+        if shown.is_empty() {
+            return;
+        }
+        log::log(format!("live text {} chars", shown.chars().count()));
+        let _ = self.app.emit_to("pill", "live-text", &shown);
+        let Some(w) = self.app.get_webview_window("pill") else { return };
+        if self.shape_pill(&w, PILL_TEXT, false) {
+            self.place_pill(&w, PILL_TEXT);
+        }
+    }
+
     fn finish(self: &Arc<Self>) {
+        self.from_dot.store(false, Ordering::SeqCst);
         let Some(active) = self.rec.lock().take() else { return };
         self.recording.store(false, Ordering::SeqCst);
         hotkey::set_recording(false);
@@ -439,19 +599,13 @@ impl Core {
         self.pill("transcribing", &app_name, "");
         let me = self.clone();
         let live = active.live.clone();
-        std::thread::spawn(move || me.process(samples, secs, active.exe, active.title, app_name, Some(active.target), Some(live)));
+        let context = active.context.lock().clone();
+        std::thread::spawn(move || me.process(samples, secs, active.exe, active.title, app_name, Some(active.target), Some(live), context));
     }
 
-    /// Speech → text → learned fixes → AI cleanup. Returns (raw, final text, asr ms, llm ms).
+    /// Speech → text → learned fixes → spoken snippets. Returns (raw, draft, asr ms).
     /// `live` holds text already transcribed during recording; only the rest is transcribed here.
-    /// `on_polish` is called right before the AI cleanup starts.
-    fn transcribe_and_clean(
-        &self,
-        samples: &[f32],
-        style: &str,
-        live: Option<Arc<Mutex<LiveText>>>,
-        on_polish: impl FnOnce(),
-    ) -> Result<(String, String, i64, i64), String> {
+    fn transcribe_draft(&self, samples: &[f32], live: Option<Arc<Mutex<LiveText>>>) -> Result<(String, String, i64), String> {
         let s = self.settings.read().clone();
         let vocab = self.vocab();
         let t = Instant::now();
@@ -475,63 +629,122 @@ impl Core {
         }
         let asr_ms = t.elapsed().as_millis() as i64;
         if raw.trim().is_empty() {
+            return Ok((raw, String::new(), asr_ms));
+        }
+        let fixed = self.store.apply_fixes(&raw);
+        let pairs = self.snippet_pairs();
+        let refs: Vec<(&str, &str)> = pairs.iter().map(|(say, paste)| (say.as_str(), paste.as_str())).collect();
+        Ok((raw, smart::expand_snippets(&fixed, &refs), asr_ms))
+    }
+
+    /// The Engine test: the same speech, snippets, and cleanup as a dictation, without pasting.
+    fn transcribe_and_clean(&self, samples: &[f32], style: &str) -> Result<(String, String, i64, i64), String> {
+        let (raw, draft, asr_ms) = self.transcribe_draft(samples, None)?;
+        if draft.trim().is_empty() {
             return Ok((raw, String::new(), asr_ms, 0));
         }
-        let mut text = self.store.apply_fixes(&raw);
-        let t = Instant::now();
-        if s.cleanup && (s.polish == "always" || needs_polish(&text, style)) {
-            // The writing AI may be busy for minutes (notes for a long meeting): then don't wait for it.
-            match self.llm.try_lock_for(Duration::from_millis(300)) {
-                Some(mut guard) => {
-                    if let Some(llm) = guard.as_mut() {
-                        on_polish();
-                        match llm.cleanup(&text, style, &vocab, s.latin_tech_terms) {
-                            Ok(clean) if !clean.is_empty() => text = self.store.apply_fixes(&clean),
-                            Ok(_) => {}
-                            Err(e) => log::log(format!("cleanup skipped, pasting unpolished text: {e:#}")),
-                        }
-                    }
-                }
-                None => {
-                    log::log("writing AI busy (meeting notes); pasting without polish");
-                    text = finish_sentence(&text);
-                }
-            }
-        } else {
-            text = finish_sentence(&text);
+        let s = self.settings.read().clone();
+        let quick = finish_sentence(&draft);
+        if !s.cleanup {
+            return Ok((raw, quick, asr_ms, 0));
         }
+        let t = Instant::now();
+        let vocab = self.vocab();
+        let keep: Vec<String> = self.snippet_pairs().into_iter().map(|(_, paste)| paste).filter(|p| quick.contains(p.as_str())).collect();
+        let text = match self.llm.lock().as_mut() {
+            Some(llm) => match llm.cleanup(&draft, style, &vocab, s.latin_tech_terms, "", &keep) {
+                Ok(clean) if !clean.is_empty() => self.store.apply_fixes(&clean),
+                _ => quick,
+            },
+            None => quick,
+        };
         Ok((raw, text, asr_ms, t.elapsed().as_millis() as i64))
+    }
+
+    fn snippet_pairs(&self) -> Vec<(String, String)> {
+        let s = self.settings.read();
+        let mut pairs = Vec::new();
+        for (say, paste) in smart::email_phrases(&s.email) {
+            pairs.push((say.to_string(), paste));
+        }
+        for sn in &s.snippets {
+            pairs.push((sn.say.clone(), sn.paste.clone()));
+        }
+        pairs
     }
 
     /// 	arget: the window that was in front when you started talking; text is pasted only there.
     #[allow(clippy::too_many_arguments)]
-    fn process(self: &Arc<Self>, samples: Vec<f32>, secs: f64, exe: String, title: String, app_name: String, target: Option<isize>, live: Option<Arc<Mutex<LiveText>>>) {
+    fn process(self: &Arc<Self>, samples: Vec<f32>, secs: f64, exe: String, title: String, app_name: String, target: Option<isize>, live: Option<Arc<Mutex<LiveText>>>, context: String) {
         let s = self.settings.read().clone();
         let style = if s.app_styles { win::style_for(&exe, &title) } else { "" };
-        let (raw, text, asr_ms, llm_ms) = match self.transcribe_and_clean(&samples, style, live, || self.pill("polishing", &app_name, "")) {
+        let (raw, draft, asr_ms) = match self.transcribe_draft(&samples, live) {
             Ok(r) => r,
             Err(e) => return self.pill("error", &app_name, e),
         };
-        log::log(format!("dictation {secs:.1}s audio, speech {asr_ms} ms, cleanup {llm_ms} ms, style '{style}'"));
-        if text.trim().is_empty() {
+        if draft.trim().is_empty() {
             return self.pill("empty", &app_name, "Didn't catch that");
         }
-
+        let quick = finish_sentence(&draft);
+        let polish = s.cleanup && (s.polish == "always" || needs_polish(&draft, style));
         // A trailing space, so the next dictation doesn't glue onto this one ("…today.Please").
-        let mut pasted = if text.ends_with(char::is_whitespace) { text.clone() } else { format!("{text} ") };
-        // In a terminal a line break runs a command: paste dictation there as one line.
-        if win::is_console(win::foreground()) {
+        let mut pasted = if quick.ends_with(char::is_whitespace) { quick.clone() } else { format!("{quick} ") };
+        if win::is_console(target.unwrap_or(0)) {
             pasted = pasted.replace("\r\n", " ").replace(['\r', '\n'], " ");
         }
+        let mut typed = false;
         if target.is_some_and(|h| h != win::foreground()) {
-            // You moved to another window while Seda was writing: don't type into it.
-            let _ = win::copy_private(&text);
+            let _ = win::copy_private(&quick);
             self.pill("error", &app_name, "You switched windows, so Seda didn't paste. Press Ctrl+V where you want it.");
         } else if let Err(e) = win::paste(&pasted) {
             self.pill("error", &app_name, format!("Paste failed: {e}"));
         } else {
-            self.pill("done", &app_name, text.clone());
+            typed = true;
+            self.pill(if polish { "polishing" } else { "done" }, &app_name, quick.clone());
         }
+        let seq = if typed { self.paste_seq.fetch_add(1, Ordering::SeqCst) + 1 } else { 0 };
+
+        let (text, llm_ms) = if polish {
+            let t = Instant::now();
+            let vocab = self.vocab();
+            let keep: Vec<String> = self.snippet_pairs().into_iter().map(|(_, paste)| paste).filter(|p| quick.contains(p.as_str())).collect();
+            let cleaned = match self.llm.try_lock_for(Duration::from_millis(300)) {
+                Some(mut guard) => guard.as_mut().and_then(|llm| {
+                    match llm.cleanup(&draft, style, &vocab, s.latin_tech_terms, &context, &keep) {
+                        Ok(clean) if !clean.is_empty() => Some(self.store.apply_fixes(&clean)),
+                        Ok(_) => None,
+                        Err(e) => {
+                            log::log(format!("cleanup skipped, leaving the first paste: {e:#}"));
+                            None
+                        }
+                    }
+                }),
+                None => {
+                    log::log("writing AI busy (meeting notes); leaving the first paste");
+                    None
+                }
+            };
+            let llm_ms = t.elapsed().as_millis() as i64;
+            let final_text = cleaned.unwrap_or_else(|| quick.clone());
+            if typed && smart::meaningfully_different(&pasted, &final_text) && self.paste_seq.load(Ordering::SeqCst) == seq && !self.recording.load(Ordering::SeqCst) {
+                let mut replacement = if final_text.ends_with(char::is_whitespace) { final_text.clone() } else { format!("{final_text} ") };
+                if win::is_console(target.unwrap_or(0)) {
+                    replacement = replacement.replace("\r\n", " ").replace(['\r', '\n'], " ");
+                }
+                if target.is_some_and(|h| h != win::foreground()) {
+                    log::log("cleanup finished after the window changed; the first paste stays");
+                } else if let Err(e) = win::replace_tail(&pasted, &replacement) {
+                    log::log(format!("could not replace the first paste: {e:#}"));
+                }
+            }
+            if typed {
+                self.pill("done", &app_name, final_text.clone());
+            }
+            (final_text, llm_ms)
+        } else {
+            (quick, 0)
+        };
+        log::log(format!("dictation {secs:.1}s audio, speech {asr_ms} ms, cleanup {llm_ms} ms, style '{style}'"));
 
         let audio_path = if s.save_audio {
             let p = settings::data_dir().join("audio").join(format!("{}.wav", chrono::Local::now().format("%Y%m%d-%H%M%S-%3f")));
@@ -722,6 +935,39 @@ fn local_hotkey(window: tauri::WebviewWindow, event: String) -> Result<(), Strin
     Ok(())
 }
 
+/// Click the on-screen icon: start the regular dictation capsule, or stop one that icon started.
+#[tauri::command]
+fn dot_click(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "pill")?;
+    core.inner().dot_click();
+    Ok(())
+}
+
+/// Drag the circle. `dx` and `dy` are CSS pixels since the last move (the webview's own pixels).
+#[tauri::command]
+fn dot_nudge(window: tauri::WebviewWindow, dx: f64, dy: f64) -> Result<(), String> {
+    only(&window, "pill")?;
+    if dx == 0.0 && dy == 0.0 {
+        return Ok(());
+    }
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let x = pos.x + (dx * scale).round() as i32;
+    let y = pos.y + (dy * scale).round() as i32;
+    window.set_position(tauri::PhysicalPosition::new(x, y)).map_err(|e| e.to_string())
+}
+
+/// Remember where the circle was dropped, so the next launch puts it back.
+#[tauri::command]
+fn dot_save(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "pill")?;
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let mut s = core.settings.write();
+    s.dot_x = Some(pos.x);
+    s.dot_y = Some(pos.y);
+    s.save().map_err(|e| e.to_string())
+}
+
 /// Commands that act on your screen or microphone may only come from the window they belong to.
 fn only(window: &tauri::WebviewWindow, label: &str) -> Result<(), String> {
     if window.label() == label { Ok(()) } else { Err(format!("not allowed from the {} window", window.label())) }
@@ -847,7 +1093,7 @@ async fn test_file(core: State<'_, Arc<Core>>, window: tauri::WebviewWindow, pat
     tauri::async_runtime::spawn_blocking(move || {
         let samples = audio::load_wav(path.trim().trim_matches('"')).map_err(|e| format!("Couldn't read the file: {e}"))?;
         let secs = samples.len() as f64 / audio::RATE as f64;
-        let (raw, text, asr_ms, llm_ms) = core.transcribe_and_clean(&samples, &style, None, || {})?;
+        let (raw, text, asr_ms, llm_ms) = core.transcribe_and_clean(&samples, &style)?;
         Ok(TestResult { raw, text, asr_ms, llm_ms, secs })
     })
     .await
@@ -1039,14 +1285,16 @@ fn diagnostics(core: CoreState) -> String {
 
 // ---------- meetings ----------
 
-#[tauri::command]
+/// Async: opening the mic and every speaker takes a second or two and must not freeze the window.
+#[tauri::command(async)]
 fn meeting_start(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
     only(&window, "main")?;
     start_meeting(core.inner())
 }
 
 /// Continue a stopped meeting: same transcript, clock and notepad; notes are rewritten at the end.
-#[tauri::command]
+/// Async for the same reason as meeting_start.
+#[tauri::command(async)]
 fn meeting_resume(core: CoreState, window: tauri::WebviewWindow, id: i64) -> Result<(), String> {
     only(&window, "main")?;
     let m = core.store.meeting(id).ok_or("Meeting not found")?;
@@ -1091,9 +1339,13 @@ fn stop_meeting(core: &Arc<Core>) -> Option<i64> {
         c.dismissed = detect::active().iter().map(|a| a.id).collect();
     }
     let (secs, ts, mine) = (m.offset as f64 + m.started.elapsed().as_secs_f64(), m.ts.clone(), m.my_notes.lock().clone());
+    let appt = m.appointment.lock().clone();
     let resumed = m.resume_id;
     let _ = core.app.emit("meeting-state", false);
-    let (segs, live) = m.stop();
+    let (mut segs, live) = m.stop();
+    for seg in &mut segs {
+        seg.who = smart::label_who(&seg.who, &appt.people);
+    }
     let transcript = serde_json::to_string(&segs).unwrap_or_default();
     let id = match resumed {
         // Resumed: the same meeting grows; its notes are rewritten below.
@@ -1104,6 +1356,11 @@ fn stop_meeting(core: &Arc<Core>) -> Option<i64> {
         }
         None => core.store.add_meeting(&ts, secs, &transcript, &mine),
     };
+    if !appt.subject.is_empty() || !appt.people.is_empty() {
+        // The title stays empty until the notes are written, so the page still shows that it is working.
+        // The calendar subject is stored separately and the list uses it as the name in the meantime.
+        core.store.set_meeting_meta(id, &appt.people.join(" | "), &appt.subject);
+    }
     log::log(format!("meeting saved: {:.0} min, {} lines", secs / 60.0, segs.len()));
     let _ = core.app.emit("meetings-changed", ());
     let c = core.clone();
@@ -1124,7 +1381,7 @@ impl Core {
             return win::hide(h.0 as isize);
         }
         let _ = w.set_size(tauri::LogicalSize::new(340.0, 84.0));
-        win::round_corners(h.0 as isize);
+        win::round_corners(h.0 as isize, true);
         if let (Some(m), Ok(size)) = (self.app.primary_monitor().ok().flatten(), w.outer_size()) {
             let area = m.work_area();
             let margin = (16.0 * m.scale_factor()) as i32;
@@ -1136,78 +1393,128 @@ impl Core {
     }
 }
 
-/// Every 2 s: is a call app using the microphone? Then ask (or just start), and stop a meeting
+/// How often to look at who is using the microphone. Short, so the card shows up
+/// soon after a call starts. A call still has to be gone for 12 s before notes stop.
+const CALL_POLL: Duration = Duration::from_millis(400);
+
+/// Is a call app using the microphone? Then ask (or just start), and stop a meeting
 /// that was started for a call once that call has ended.
 fn watch_calls(core: Arc<Core>) {
+    // The call window needs a moment to subscribe. After that, look often.
+    std::thread::sleep(Duration::from_millis(500));
     loop {
-        std::thread::sleep(Duration::from_secs(2));
-        let (mode, enabled) = {
-            let s = core.settings.read();
-            (s.meeting_detect.clone(), s.meeting_apps.clone())
-        };
-        let active: Vec<&detect::CallApp> =
-            if mode == "off" { Vec::new() } else { detect::active().into_iter().filter(|a| enabled.iter().any(|e| e == a.id)).collect() };
-        let is_active = |id: &str| active.iter().any(|a| a.id == id);
-        let running = core.meeting.lock().is_some();
-        let mut c = core.call.lock();
-        c.dismissed.retain(|d| is_active(d));
-        if let Some(a) = c.asking {
-            if !is_active(a) || running {
-                c.asking = None;
-                core.call_card("hidden", "");
-            }
-        }
-        if running {
-            let Some(id) = c.linked else { continue };
-            if is_active(id) {
-                c.gone_since = None;
-            } else if c.gone_since.get_or_insert_with(Instant::now).elapsed() > Duration::from_secs(12) {
-                drop(c);
-                let name = detect::by_id(id).map(|a| a.name).unwrap_or("call");
-                log::log(format!("call ended ({name}); stopping the meeting"));
-                stop_meeting(&core);
-                core.call_card("ended", name);
-            }
-            continue;
-        }
-        c.linked = None;
-        if c.asking.is_some() {
-            continue;
-        }
-        let Some(app) = active.iter().find(|a| !c.dismissed.contains(&a.id)) else { continue };
-        log::log(format!("call detected: {}", app.name));
-        if mode == "auto" {
-            c.linked = Some(app.id);
-            c.gone_since = None;
-            drop(c);
-            match start_meeting(&core) {
-                Ok(()) => core.call_card("recording", app.name),
-                Err(e) => log::log(format!("couldn't start meeting: {e}")),
-            }
-        } else {
-            c.asking = Some(app.id);
-            core.call_card("detected", app.name);
-        }
+        watch_calls_once(&core);
+        std::thread::sleep(CALL_POLL);
     }
 }
 
-/// "Start notes" on the call card.
-#[tauri::command]
+fn watch_calls_once(core: &Arc<Core>) {
+    let (mode, enabled) = {
+        let s = core.settings.read();
+        (s.meeting_detect.clone(), s.meeting_apps.clone())
+    };
+    let active: Vec<&detect::CallApp> =
+        if mode == "off" { Vec::new() } else { detect::active().into_iter().filter(|a| enabled.iter().any(|e| e == a.id)).collect() };
+    let is_active = |id: &str| active.iter().any(|a| a.id == id);
+    let running = core.meeting.lock().is_some();
+    let mut c = core.call.lock();
+    c.dismissed.retain(|d| is_active(d));
+    // Devices are opening and the card already changed. Leave it alone.
+    if c.starting {
+        return;
+    }
+    if let Some(a) = c.asking {
+        if !is_active(a) || running {
+            c.asking = None;
+            drop(c);
+            core.call_card("hidden", "");
+            return;
+        }
+    }
+    if running {
+        // Resume and Start meeting do not come from the call card. Tie them to the call
+        // that is up now, so hanging up still stops the notes.
+        if c.linked.is_none() {
+            if let Some(app) = active.first() {
+                log::log(format!("recording will stop when {} ends", app.name));
+                c.linked = Some(app.id);
+                c.gone_since = None;
+            } else {
+                return;
+            }
+        }
+        let Some(id) = c.linked else { return };
+        if is_active(id) {
+            c.gone_since = None;
+        } else if c.gone_since.get_or_insert_with(Instant::now).elapsed() > Duration::from_secs(12) {
+            drop(c);
+            let name = detect::by_id(id).map(|a| a.name).unwrap_or("call");
+            log::log(format!("call ended ({name}); stopping the meeting"));
+            stop_meeting(core);
+            core.call_card("ended", name);
+        }
+        return;
+    }
+    c.linked = None;
+    if c.asking.is_some() {
+        return;
+    }
+    let Some(app) = active.iter().find(|a| !c.dismissed.contains(&a.id)) else { return };
+    log::log(format!("call detected: {}", app.name));
+    if mode == "auto" {
+        c.linked = Some(app.id);
+        c.gone_since = None;
+        c.starting = true;
+        let name = app.name;
+        drop(c);
+        // Show the card before the mic opens, which takes a second or two.
+        core.call_card("recording", name);
+        match start_meeting(core) {
+            Ok(()) => { core.call.lock().starting = false; }
+            Err(e) => {
+                log::log(format!("couldn't start meeting: {e}"));
+                let mut c = core.call.lock();
+                c.starting = false;
+                c.linked = None;
+                drop(c);
+                core.call_card("hidden", "");
+            }
+        }
+    } else {
+        c.asking = Some(app.id);
+        core.call_card("detected", app.name);
+    }
+}
+
+/// "Start notes" on the call card. Async so opening the mic does not freeze the card.
+#[tauri::command(async)]
 fn call_start(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
     only(&window, "call")?;
     call_start_now(core.inner())
 }
 
 fn call_start_now(core: &Arc<Core>) -> Result<(), String> {
-    let app = core.call.lock().asking.take();
-    let name = app.and_then(detect::by_id).map(|a| a.name).unwrap_or("call");
-    start_meeting(core)?;
-    {
+    let app = {
         let mut c = core.call.lock();
+        let app = c.asking.take();
         c.linked = app;
         c.gone_since = None;
-    }
+        c.starting = true;
+        app
+    };
+    let name = app.and_then(detect::by_id).map(|a| a.name).unwrap_or("call");
+    // The card changes now. Opening the mic and every speaker happens after.
     core.call_card("recording", name);
+    if let Err(e) = start_meeting(core) {
+        let mut c = core.call.lock();
+        c.starting = false;
+        c.linked = None;
+        c.asking = app;
+        drop(c);
+        core.call_card("detected", name);
+        return Err(e);
+    }
+    core.call.lock().starting = false;
     Ok(())
 }
 
@@ -1250,7 +1557,8 @@ fn write_meeting_notes(core: &Core, id: i64, live: Option<meeting::LiveNotes>) {
         return;
     }
     let t = Instant::now();
-    let notes = meeting::write_notes(core, &segs, live, &m.my_notes);
+    let others: Vec<String> = m.people.split(" | ").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let notes = meeting::write_notes(core, &segs, live, &m.my_notes, &others);
     let (title, notes) = match notes {
         Ok((n, parts, until)) => {
             // Kept so Resume only needs notes for the new stretch.
@@ -1272,6 +1580,9 @@ struct MeetingStatus {
     secs: f64,
     /// Title of the meeting being continued (Resume), else empty.
     resuming: String,
+    /// Outlook subject, when this call matches an appointment.
+    title: String,
+    people: String,
     segments: Vec<meeting::Segment>,
     my_notes: String,
 }
@@ -1279,14 +1590,19 @@ struct MeetingStatus {
 #[tauri::command]
 fn meeting_status(core: CoreState) -> MeetingStatus {
     match core.meeting.lock().as_ref() {
-        Some(m) => MeetingStatus {
-            running: true,
-            secs: m.offset as f64 + m.started.elapsed().as_secs_f64(),
-            resuming: m.resume_id.and_then(|id| core.store.meeting(id)).map(|x| x.title).unwrap_or_default(),
-            segments: m.segments.lock().clone(),
-            my_notes: m.my_notes.lock().clone(),
-        },
-        None => MeetingStatus { running: false, secs: 0.0, resuming: String::new(), segments: Vec::new(), my_notes: String::new() },
+        Some(m) => {
+            let appt = m.appointment.lock().clone();
+            MeetingStatus {
+                running: true,
+                secs: m.offset as f64 + m.started.elapsed().as_secs_f64(),
+                resuming: m.resume_id.and_then(|id| core.store.meeting(id)).map(|x| x.title).unwrap_or_default(),
+                title: appt.subject,
+                people: appt.people.join(", "),
+                segments: m.segments.lock().clone(),
+                my_notes: m.my_notes.lock().clone(),
+            }
+        }
+        None => MeetingStatus { running: false, secs: 0.0, resuming: String::new(), title: String::new(), people: String::new(), segments: Vec::new(), my_notes: String::new() },
     }
 }
 
@@ -1511,7 +1827,7 @@ fn selftest(args: &[String]) {
         let raw = asr.transcribe(&samples, &s.language, &[]).unwrap_or_default();
         let asr_s = t.elapsed().as_secs_f32();
         let t = Instant::now();
-        let clean = llm.cleanup(&raw, style, &[], s.latin_tech_terms).unwrap_or_default();
+        let clean = llm.cleanup(&raw, style, &[], s.latin_tech_terms, "", &[]).unwrap_or_default();
         println!("{f}  [{:.1}s audio | speech {asr_s:.2}s | cleanup {:.2}s]\n  heard: {raw}\n  final: {clean}\n",
             samples.len() as f32 / audio::RATE as f32, t.elapsed().as_secs_f32());
     }
@@ -1568,7 +1884,7 @@ fn tauri_main() {
             mic_test_start, mic_test_stop, list_mics, open_mic_privacy, test_pill, finish_onboarding, diagnostics, open_log,
             meeting_start, meeting_stop, meeting_status, meetings_list, meeting_get, meeting_delete, meeting_renotes,
             meeting_set_my_notes, meeting_save_notes, meeting_ask, meeting_clear_chat,
-            call_start, call_dismiss, call_hide, call_open, call_apps, local_hotkey,
+            call_start, call_dismiss, call_hide, call_open, call_apps, local_hotkey, dot_click, dot_nudge, dot_save,
             app_version, update_status, update_check, update_install, meeting_resume
         ])
         .setup(|app| {
@@ -1591,6 +1907,8 @@ fn tauri_main() {
                 rec: Mutex::new(None),
                 recording: Arc::new(AtomicBool::new(false)),
                 pill_gen: AtomicU64::new(0),
+                from_dot: AtomicBool::new(false),
+                paste_seq: AtomicU64::new(0),
             meeting: Mutex::new(None),
                 call: Mutex::new(CallState::default()),
                 fix: Mutex::new(None),
@@ -1667,7 +1985,7 @@ fn tauri_main() {
                                 let segs: Vec<meeting::Segment> = std::fs::read_to_string(&path).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
                                 let live = meeting::simulate_live(&c, &segs);
                                 let t = Instant::now();
-                                let text = match meeting::write_notes(&c, &segs, Some(live), "") { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
+                                let text = match meeting::write_notes(&c, &segs, Some(live), "", &[]) { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
                                 let _ = std::fs::write(format!("{path}.live.md"), &text);
                                 log::log(format!("test livenotes: end-of-meeting wait {:.1}s", t.elapsed().as_secs_f32()));
                             }
@@ -1676,7 +1994,7 @@ fn tauri_main() {
                                 let path = s[6..].to_string();
                                 let segs: Vec<meeting::Segment> = std::fs::read_to_string(&path).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
                                 let t = Instant::now();
-                                let text = match meeting::write_notes(&c, &segs, None, "") { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
+                                let text = match meeting::write_notes(&c, &segs, None, "", &[]) { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
                                 let _ = std::fs::write(format!("{path}.notes.md"), &text);
                                 log::log(format!("test notes: {} lines in {:.1}s", segs.len(), t.elapsed().as_secs_f32()));
                             }
@@ -1699,7 +2017,7 @@ fn tauri_main() {
                                     Ok(samples) => {
                                         let secs = samples.len() as f64 / audio::RATE as f64;
                                         c.pill("transcribing", "Test", "");
-                                        c.process(samples, secs, "notepad.exe".into(), "Test".into(), "Test".into(), None, None);
+                                        c.process(samples, secs, "notepad.exe".into(), "Test".into(), "Test".into(), None, None, String::new());
                                     }
                                     Err(e) => log::log(format!("test wav: {e}")),
                                 }

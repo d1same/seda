@@ -31,14 +31,14 @@ export default function Overview({ settings, status, go, open }: { settings: Set
     const t = items.filter((i) => new Date(i.ts).toDateString() === today);
     const words = t.reduce((n, i) => n + (i.corrected ?? i.cleaned).split(/\s+/).filter(Boolean).length, 0);
     const recent = items.slice(0, 20);
-    const avg = recent.length ? recent.reduce((n, i) => n + i.asr_ms + i.llm_ms, 0) / recent.length / 1000 : 0;
+    const avg = recent.length ? recent.reduce((n, i) => n + i.asr_ms, 0) / recent.length / 1000 : 0;
     return { today: t.length, words, avg };
   }, [items]);
 
   const verb = settings.dictate_mode === "toggle" ? "tap" : "hold";
   const problem = status.asr_error ?? status.llm_error;
   const summary = stats.today
-    ? `${stats.today} dictation${stats.today === 1 ? "" : "s"} today · ${stats.words.toLocaleString()} words${stats.avg ? ` · ${stats.avg.toFixed(1)} s average wait` : ""}`
+    ? `${stats.today} dictation${stats.today === 1 ? "" : "s"} today · ${stats.words.toLocaleString()} words${stats.avg ? ` · ${stats.avg.toFixed(1)} s until the words land` : ""}`
     : "Nothing dictated yet today.";
 
   return (

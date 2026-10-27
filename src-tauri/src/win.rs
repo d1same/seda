@@ -110,6 +110,68 @@ fn set_private(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::E
     cb.set().exclude_from_history().exclude_from_cloud().text(text.to_string())
 }
 
+const VK_LEFT: u16 = 0x25;
+
+/// Select the `n` characters before the caret, then paste `new` over them.
+/// The caret has to still be at the end of the draft this just typed.
+pub fn replace_tail(old: &str, new: &str) -> anyhow::Result<()> {
+    if foreground_is_elevated() {
+        copy_private(new)?;
+        anyhow::bail!("This window runs as administrator, so Windows blocks typing into it. The text is on your clipboard — press Ctrl+V.");
+    }
+    let n = old.chars().count();
+    if n == 0 || n > 1500 {
+        anyhow::bail!("nothing to replace");
+    }
+    select_back(n);
+    std::thread::sleep(Duration::from_millis(40));
+    paste(new)
+}
+
+fn select_back(n: usize) {
+    let mut inputs = Vec::with_capacity(n * 2 + 2);
+    inputs.push(key(VK_SHIFT, false));
+    for _ in 0..n {
+        inputs.push(key(VK_LEFT, false));
+        inputs.push(key(VK_LEFT, true));
+    }
+    inputs.push(key(VK_SHIFT, true));
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// The text already in the focused box, just before the caret. Empty when the app has no text
+/// pattern (a game, a terminal, a canvas). This reads; it does not select or copy.
+pub fn text_before_caret(max_chars: usize) -> String {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationTextPattern2, TextPatternRangeEndpoint_Start, TextUnit_Character, UIA_TextPattern2Id,
+    };
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let Ok(auto) = CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None::<&windows::core::IUnknown>, CLSCTX_INPROC_SERVER) else {
+            return String::new();
+        };
+        let Ok(focused) = auto.GetFocusedElement() else { return String::new() };
+        let Ok(pattern) = focused.GetCurrentPatternAs::<IUIAutomationTextPattern2>(UIA_TextPattern2Id) else {
+            return String::new();
+        };
+        let mut active = windows::core::BOOL(0);
+        let Ok(range) = pattern.GetCaretRange(&mut active) else { return String::new() };
+        let back = max_chars.min(800) as i32;
+        let _ = range.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -back);
+        let Ok(text) = range.GetText(back.max(1)) else { return String::new() };
+        let owned = text.to_string();
+        let count = owned.chars().count();
+        if count <= max_chars {
+            owned
+        } else {
+            owned.chars().skip(count - max_chars).collect()
+        }
+    }
+}
+
 pub fn paste(text: &str) -> anyhow::Result<()> {
     if foreground_is_elevated() {
         let mut cb = arboard::Clipboard::new()?;
@@ -268,19 +330,53 @@ pub fn make_overlay(hwnd: isize, click_through: bool) {
         let strip = (WS_CAPTION.0 | WS_THICKFRAME.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0 | WS_BORDER.0 | WS_DLGFRAME.0) as isize;
         SetWindowLongPtrW(h, GWL_STYLE, (style & !strip) | WS_POPUP.0 as isize);
         let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-        let flags = (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0 | if click_through { WS_EX_TRANSPARENT.0 } else { 0 }) as isize;
-        let drop = (WS_EX_WINDOWEDGE.0 | WS_EX_CLIENTEDGE.0 | WS_EX_DLGMODALFRAME.0) as isize;
+        // Drop TRANSPARENT too, or turning click-through off would leave the old flag in place
+        // and the circle could never receive a click.
+        let drop = (WS_EX_WINDOWEDGE.0 | WS_EX_CLIENTEDGE.0 | WS_EX_DLGMODALFRAME.0 | WS_EX_TRANSPARENT.0) as isize;
+        let mut flags = (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize;
+        if click_through {
+            flags |= WS_EX_TRANSPARENT.0 as isize;
+        }
         SetWindowLongPtrW(h, GWL_EXSTYLE, (ex & !drop) | flags);
         let _ = SetWindowPos(h, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 
-/// Native rounded corners (Windows 11). Used instead of a clip region: clipping a WebView2 window
-/// can stop it from appearing on screen at all.
-pub fn round_corners(hwnd: isize) {
-    use windows::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
+/// Clip the pill window to the Seda icon's rounded square, or restore the full rectangle.
+/// The corner radius matches `seda-icon.svg` (229.9 on a 1024 canvas), so the corners outside
+/// the icon are not part of the window and the desktop shows through.
+/// The region is applied only after the window has a real size: an empty clip hides a WebView.
+pub fn clip_icon(hwnd: isize, on: bool, px: i32, py: i32) {
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
     unsafe {
-        let pref = DWMWCP_ROUND;
+        let h = HWND(hwnd as _);
+        if !on || px < 8 || py < 8 {
+            let _ = SetWindowRgn(h, None, true);
+            return;
+        }
+        let radius = ((px.min(py) as f64) * (229.9 / 1024.0)).round() as i32;
+        let curve = (radius * 2).max(2);
+        let rgn = CreateRoundRectRgn(0, 0, px, py, curve, curve);
+        if rgn.is_invalid() {
+            return;
+        }
+        // Success: Windows now owns the region and deletes it. On failure we must delete it ourselves.
+        if SetWindowRgn(h, Some(rgn), true) == 0 {
+            use windows::core::Free;
+            let mut rgn = rgn;
+            rgn.free();
+        }
+    }
+}
+
+/// Native rounded corners (Windows 11) for the status capsule. The desktop icon turns them off:
+/// that preference draws a light frame. The icon's own anti-aliased corners are the shape.
+pub fn round_corners(hwnd: isize, round: bool) {
+    use windows::Win32::Graphics::Dwm::{
+        DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DwmSetWindowAttribute,
+    };
+    unsafe {
+        let pref = if round { DWMWCP_ROUND } else { DWMWCP_DONOTROUND };
         let _ = DwmSetWindowAttribute(
             HWND(hwnd as _),
             DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -290,6 +386,22 @@ pub fn round_corners(hwnd: isize) {
         // No 1px light window border around the pill (DWMWA_COLOR_NONE).
         let none: u32 = 0xFFFF_FFFE;
         let _ = DwmSetWindowAttribute(HWND(hwnd as _), DWMWA_BORDER_COLOR, &none as *const _ as *const std::ffi::c_void, 4);
+    }
+}
+
+/// The idle icon's clear corners turn white while Windows paints this window in dark mode.
+/// The mark is already dark, so the frame stays light and the desktop shows through.
+pub fn clear_dark_corners(hwnd: isize) {
+    use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+    unsafe {
+        // A Windows BOOL is 4 bytes. This crate no longer exports that type.
+        let light: i32 = 0;
+        let _ = DwmSetWindowAttribute(
+            HWND(hwnd as _),
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &light as *const i32 as *const std::ffi::c_void,
+            4,
+        );
     }
 }
 

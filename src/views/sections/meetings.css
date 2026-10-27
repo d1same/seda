@@ -28,9 +28,10 @@
 .mine { white-space: pre-wrap; font-size: 15px; line-height: 1.65; unicode-bidi: plaintext; user-select: text; }
 
 .transcript { display: flex; flex-direction: column; user-select: text; }
-.transcript .line { display: grid; grid-template-columns: 44px 42px 1fr; gap: 10px; padding: 6px 0; font-size: 14px; line-height: 1.55; }
+.transcript .line { display: grid; grid-template-columns: 44px max-content 1fr; gap: 10px; padding: 6px 0; font-size: 14px; line-height: 1.55; }
+.mdoc-people { margin: -6px 0 14px; font-size: 13px; color: var(--ink-2); }
 .transcript .t { font-size: 12px; color: var(--ink-3); padding-top: 2px; font-variant-numeric: tabular-nums; }
-.transcript .who { font-size: 12px; font-weight: 600; padding-top: 2px; }
+.transcript .who { font-size: 12px; font-weight: 600; padding-top: 2px; max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .transcript .you .who { color: var(--brand); }
 .transcript .them .who { color: var(--amber); }
 .transcript .say { unicode-bidi: plaintext; }

@@ -1,7 +1,14 @@
-/* The pill IS the window: a small solid capsule (rounded by Windows 11 itself), so there is
-   nothing transparent or clipped that could fail to draw. */
+/* The status capsule is a solid window with native rounded corners.
+   The desktop icon is the Seda mark on a clear window: the corners outside the icon show the desktop. */
 /* Scoped to the pill window: every CSS file ships in one bundle, so an unscoped rule would paint the main window dark too. */
+/* WebView2 fills a transparent page with white when this document follows the dark system theme.
+   The capsule and the icon already set their own colors, so this window stays on the light scheme
+   and the icon's corners stay clear on a dark desktop. `only` stops the browser overriding it. */
+html.view-pill { color-scheme: only light !important; color: #efe7d8; }
 html.view-pill, html.view-pill body, html.view-pill #root { background: #141210 !important; overflow: hidden; margin: 0; }
+html.view-pill:has(.pill-stage.dot),
+html.view-pill:has(.pill-stage.dot) body,
+html.view-pill:has(.pill-stage.dot) #root { background: transparent !important; }
 
 .pill-stage { height: 100vh; display: flex; align-items: center; justify-content: center; transition: opacity .14s ease; }
 .pill-stage.out { opacity: 0; }
@@ -14,7 +21,33 @@ html.view-pill, html.view-pill body, html.view-pill #root { background: #141210 
   font-family: "IBM Plex Sans", "Vazirmatn", sans-serif;
 }
 
-.idle-logo { opacity: .6; }
+.idle-dot {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  max-width: 48px;
+  max-height: 48px;
+  aspect-ratio: 1;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: #efe7d8;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  box-shadow: none;
+  outline: none;
+  appearance: none;
+}
+.idle-dot > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.idle-dot:active { cursor: grabbing; }
+.idle-time {
+  position: absolute; left: 0; right: 0; bottom: 5px; z-index: 1;
+  font: 500 8px/1 "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums;
+  color: #fff; text-align: center; pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
+}
 .pill-logo { display: flex; flex: none; }
 .logo-pulse { animation: tally 1.1s ease-in-out infinite; }
 @keyframes tally { 50% { opacity: .45; } }
@@ -27,7 +60,11 @@ html.view-pill, html.view-pill body, html.view-pill #root { background: #141210 
 @keyframes sweep { from { left: -18px; } to { left: 100%; } }
 
 .pill-time { flex: none; font: 500 11px/1 "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; color: #a79e8d; }
+.pill.stoppable { cursor: pointer; }
+.pill-stop { flex: none; width: 10px; height: 10px; border-radius: 2px; background: #ff4b2b; }
 
 .pill-text { flex: 1; min-width: 0; font-size: 12px; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; unicode-bidi: plaintext; }
+.pill.listening .pill-text { color: #efe7d8; }
+.pill.polishing .pill-text { color: #f0d7a8; }
 .pill.done .pill-text { color: #8fe3a0; }
 .pill.error .pill-text, .pill.empty .pill-text { color: #f3c08a; font-size: 11.5px; }

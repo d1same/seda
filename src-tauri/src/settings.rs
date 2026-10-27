@@ -17,6 +17,13 @@ pub struct Binding {
     pub win: bool,
 }
 
+/// When the dictation contains `say`, that phrase is replaced with `paste` before it is typed.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Snippet {
+    pub say: String,
+    pub paste: String,
+}
+
 impl Binding {
     pub fn mouse(code: u32) -> Self {
         Self { kind: "mouse".into(), code, ctrl: false, shift: false, alt: false, win: false }
@@ -39,7 +46,12 @@ pub struct Settings {
     pub save_audio: bool,
     pub sounds: bool,
     pub pill_position: String, // "bottom" | "top"
-    pub idle_dot: bool,        // show a small translucent dot while idle
+    pub idle_dot: bool,        // show a circle while idle: click to dictate, drag to move
+    /// Where the user left that circle, in physical pixels. Empty = bottom centre of the screen.
+    #[serde(default)]
+    pub dot_x: Option<i32>,
+    #[serde(default)]
+    pub dot_y: Option<i32>,
     pub autostart: bool,       // start with Windows (quietly, in the tray)
     pub input_device: String,  // microphone name; "" = Windows default
     pub polish: String,        // "smart" (writing AI only when needed) | "always"; `cleanup` = off switch
@@ -53,6 +65,10 @@ pub struct Settings {
     pub meeting_apps: Vec<String>,
     /// What Seda calls the user: greeting, "You" in transcripts, owner of tasks in meeting notes.
     pub user_name: String,
+    /// Pasted when you say "my email".
+    pub email: String,
+    /// Spoken phrase → the text that replaces it. "my email" is covered by `email`.
+    pub snippets: Vec<Snippet>,
     /// Save meeting audio as WAV files. Off: like Granola, audio is transcribed live and never stored.
     pub keep_meeting_audio: bool,
 }
@@ -71,6 +87,8 @@ impl Default for Settings {
             sounds: true,
             pill_position: "bottom".into(),
             idle_dot: false,
+            dot_x: None,
+            dot_y: None,
             autostart: true,
             input_device: String::new(),
             polish: "smart".into(),
@@ -82,6 +100,8 @@ impl Default for Settings {
             meeting_detect: "ask".into(),
             meeting_apps: crate::detect::APPS.iter().filter(|a| a.default_on).map(|a| a.id.to_string()).collect(),
             user_name: String::new(),
+            email: String::new(),
+            snippets: Vec::new(),
             keep_meeting_audio: false,
         }
     }
