@@ -1,15 +1,15 @@
-# Publish a Seda release. Paste this from any folder:
+# Publish a Seda release. Write what changed in notes.md, then paste this:
 #
 #   cd Z:\Projects\Whisper\seda
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-#   Set-Content notes.md "What changed, in one or two sentences."
 #   .\scripts\release.ps1 -Version 0.2.10 -Notes notes.md
 #
 # When the window says to expect a password, press Enter. The password is empty.
 # The installer is published to GitHub and copied to Z:\Projects\Whisper\installer.
 #
-# The version must already match in package.json, src-tauri/tauri.conf.json, and
-# src-tauri/Cargo.toml. The signing key stays at %USERPROFILE%\.tauri\seda-updater.key.
+# -Version is written into package.json, src-tauri/tauri.conf.json, and
+# src-tauri/Cargo.toml. The signing key stays at
+# %USERPROFILE%\.tauri\seda-updater.key.
 # If the installer is already built, add -SkipBuild to sign and publish that file.
 param(
     [string] $Version,
@@ -21,6 +21,42 @@ param(
     [switch] $CleanupOnly,   # only delete leftover folders, then stop
     [switch] $SkipBuild      # sign and publish the installer that is already built
 )
+function Set-AppVersion([string] $Root, [string] $Version) {
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    foreach ($rel in @("package.json", "src-tauri\tauri.conf.json")) {
+        $path = Join-Path $Root $rel
+        $text = [IO.File]::ReadAllText($path)
+        $match = [regex]::Match($text, '"version"\s*:\s*"([^"]+)"')
+        if (-not $match.Success) { throw "$rel has no version." }
+        $old = $match.Groups[1].Value
+        if ($old -eq $Version) { continue }
+        $span = $match.Groups[1]
+        $next = $text.Remove($span.Index, $span.Length).Insert($span.Index, $Version)
+        [IO.File]::WriteAllText($path, $next, $utf8)
+        Write-Host "Set $rel to $Version."
+    }
+    $cargoPath = Join-Path $Root "src-tauri\Cargo.toml"
+    $cargo = [IO.File]::ReadAllText($cargoPath)
+    $match = [regex]::Match($cargo, '(?m)^version = "([^"]+)"')
+    if (-not $match.Success) { throw "src-tauri/Cargo.toml has no version." }
+    $old = $match.Groups[1].Value
+    if ($old -ne $Version) {
+        $span = $match.Groups[1]
+        $next = $cargo.Remove($span.Index, $span.Length).Insert($span.Index, $Version)
+        [IO.File]::WriteAllText($cargoPath, $next, $utf8)
+        Write-Host "Set src-tauri/Cargo.toml to $Version."
+    }
+}
+
+function Read-ReleaseNotes([string] $NotesPath) {
+    $noteText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $NotesPath)).Trim()
+    if ($noteText -eq "What changed, in one or two sentences.") {
+        throw "notes.md still has the example sentence. Write what changed, then run this again."
+    }
+    if (-not $noteText) { throw "notes.md is empty. Write what changed, then run this again." }
+    return $noteText
+}
+
 function Get-BuildErrorLines([string] $LogPath) {
     $header = "Build failed. Full log: $LogPath"
     if (-not (Test-Path -LiteralPath $LogPath)) {
@@ -275,16 +311,12 @@ else {
 }
 if ($CleanupOnly) { return }
 if (-not $Version -or -not $Notes) { throw "Pass -Version and -Notes." }
+$noteText = Read-ReleaseNotes $Notes
 
 $key = Join-Path $env:USERPROFILE ".tauri\seda-updater.key"
 if (-not (Test-Path $key)) { throw "Signing key not found at $key" }
 
-foreach ($f in "package.json", "src-tauri\tauri.conf.json") {
-    if (-not (Select-String -Path (Join-Path $root $f) -Pattern "`"version`": `"$Version`"" -Quiet)) { throw "$f is not at version $Version" }
-}
-if (-not (Select-String -Path (Join-Path $root "src-tauri\Cargo.toml") -Pattern "^version = `"$Version`"" -Quiet)) {
-    throw "src-tauri/Cargo.toml is not at version $Version"
-}
+Set-AppVersion $root $Version
 
 $target = $layout.Target
 $bundle = Join-Path $target "release\bundle\nsis"
@@ -384,15 +416,18 @@ $sig = [IO.File]::ReadAllText("$installer.sig")
 # latest.json: what installed copies check. The signature is verified against the public key in the app.
 $latest = [ordered]@{
     version   = $Version
-    notes     = [IO.File]::ReadAllText((Resolve-Path $Notes))
+    notes     = $noteText
     pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     platforms = @{ "windows-x86_64" = @{ signature = $sig.Trim(); url = "https://github.com/$Repo/releases/download/$Tag/Seda_${Version}_x64-setup.exe" } }
 }
 $latestPath = Join-Path $bundle "latest.json"
-[IO.File]::WriteAllText($latestPath, ($latest | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding $false))
+$utf8 = New-Object Text.UTF8Encoding $false
+[IO.File]::WriteAllText($latestPath, ($latest | ConvertTo-Json -Depth 5), $utf8)
+$notesFile = Join-Path $bundle "release-notes.txt"
+[IO.File]::WriteAllText($notesFile, $noteText, $utf8)
 
 Write-Host "Publishing $Tag."
-$ghArgs = @("release", "create", $Tag, $installer, $latestPath, "--repo", $Repo, "--title", "Seda $Version", "--notes-file", $Notes)
+$ghArgs = @("release", "create", $Tag, $installer, $latestPath, "--repo", $Repo, "--title", "Seda $Version", "--notes-file", $notesFile)
 if ($Prerelease) { $ghArgs += "--prerelease" }
 & gh @ghArgs
 if ($LASTEXITCODE) { throw "publishing failed" }
