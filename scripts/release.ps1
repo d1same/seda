@@ -114,15 +114,53 @@ function Repair-VulkanShaderSteps([string] $TargetDir) {
     if ($changed) { Write-Host "The shader tool now builds in its own short folder and waits its turn." }
 }
 
-# A renamed project folder leaves compiler notes that still say Whisper.
-function Clear-RenamedFolderCaches([string] $TargetDir) {
+# Compiler files sit next to the repo, inside Z:\Projects\Whisper or Z:\Projects\Seda.
+function Get-SedaLayout([string] $RepoRoot) {
+    $given = $RepoRoot.TrimEnd('\', '/')
+    $full = $given
+    if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
+        try { $full = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/') } catch { }
+    }
+    $allowed = @(
+        "Z:\Projects\Whisper\seda",
+        "\\10.1.20.4\Ai Projects\Projects\Whisper\seda",
+        "Z:\Projects\Seda\seda",
+        "\\10.1.20.4\Ai Projects\Projects\Seda\seda"
+    )
+    $root = $null
+    foreach ($candidate in @($full, $given)) {
+        if ($allowed -contains $candidate) { $root = $candidate; break }
+    }
+    if (-not $root) {
+        return [pscustomobject]@{ Root = $full; Allowed = $false; Target = $null; Shader = $null; Shelf = $null }
+    }
+    $parent = Split-Path $root -Parent
+    if ($root -match '\\') { $parent = ($parent -replace '/', '\') }
+    [pscustomobject]@{
+        Root = $root
+        Allowed = $true
+        Target = Join-ProjectPath $parent "b"
+        Shader = Join-ProjectPath $parent "shader"
+        Shelf = Join-ProjectPath $parent "installer"
+    }
+}
+
+function Join-ProjectPath([string] $Parent, [string] $Child) {
+    if ($Parent -match '\\') { return ($Parent.TrimEnd('\') + '\' + $Child) }
+    return ($Parent.TrimEnd('/') + '/' + $Child)
+}
+
+# After a rename, an old compiler cache still names the other folder.
+function Clear-RenamedFolderCaches([string] $TargetDir, [string] $RepoRoot) {
     if (-not $TargetDir -or -not (Test-Path -LiteralPath $TargetDir)) { return }
+    $parentName = Split-Path (Split-Path $RepoRoot -Parent) -Leaf
+    $other = if ($parentName -eq "Seda") { "Whisper" } else { "Seda" }
     $caches = @(Get-ChildItem -Path (Join-Path $TargetDir "release\build\whisper-rs-sys-*\out\build\CMakeCache.txt") -File -ErrorAction SilentlyContinue)
     foreach ($cache in $caches) {
         if (-not $cache) { continue }
         $text = [IO.File]::ReadAllText($cache.FullName)
-        if ($text -notmatch 'Projects[\\/]Whisper') { continue }
-        Write-Host "Removing a compiler cache that still points at the Whisper folder."
+        if ($text -notmatch "Projects[\\/]$other") { continue }
+        Write-Host "Removing a compiler cache that still points at the $other folder."
         Remove-BuildTree (Split-Path $cache.FullName -Parent)
     }
 }
@@ -189,11 +227,10 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
-$full = [IO.Path]::GetFullPath($root).TrimEnd('\')
-$onSeda = ($full -eq "Z:\Projects\Seda\seda") -or ($full -eq "\\10.1.20.4\Ai Projects\Projects\Seda\seda")
-if (-not $onSeda) { throw "Run this from Z:\Projects\Seda\seda. Rename Z:\Projects\Whisper to Z:\Projects\Seda, then run it again. This copy is $full." }
+$layout = Get-SedaLayout $root
+if (-not $layout.Allowed) { throw "Run this from Z:\Projects\Whisper\seda. This copy is $($layout.Root)." }
 
-# Leftovers from earlier copies. Compiler output stays in Z:\Projects\Seda\b.
+# Leftovers from earlier copies. Compiler output stays next to the repo.
 function Remove-OldFolder([string] $dir) {
     if (-not (Test-Path -LiteralPath $dir)) { return }
     cmd /c "attrib -r `"$dir`" /s /d & rmdir /s /q `"$dir`"" | Out-Null
@@ -227,7 +264,7 @@ $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
 $env:TAURI_SIGNING_PRIVATE_KEY = $key
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 $env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~ --remap-path-prefix=$root=seda"
-# The shader tool builds in Z:\Projects\Seda\shader. Tracking stays off so a deep
+# The shader tool builds in the shader folder next to the repo. Tracking stays off so a deep
 # test compile does not trip MSBuild's file tracker.
 # Do not set CMAKE_C_FLAGS or CMAKE_CXX_FLAGS here. whisper-rs-sys copies those into
 # cmake, and cmake then drops its own flags, including /utf-8. /FS rides in CL instead.
@@ -243,11 +280,10 @@ foreach ($name in @("CL", "_CL_")) {
 $env:TrackFileAccess = "false"
 $env:MSBUILDDISABLENODEREUSE = "1"
 
-$config = Join-Path $root "src-tauri\.cargo\config.toml"
-$target = (Select-String -Path $config -Pattern 'target-dir\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-$shaderMatch = Select-String -Path $config -Pattern 'SEDA_SHADER_DIR\s*=\s*"([^"]+)"'
-if (-not $shaderMatch) { throw "src-tauri/.cargo/config.toml is missing SEDA_SHADER_DIR." }
-$shader = $shaderMatch.Matches[0].Groups[1].Value
+$target = $layout.Target
+$shader = $layout.Shader -replace '\\', '/'
+$env:CARGO_TARGET_DIR = $target -replace '\\', '/'
+$env:CARGO_BUILD_TARGET_DIR = $env:CARGO_TARGET_DIR
 $env:SEDA_SHADER_DIR = $shader
 if (-not (Test-Path -LiteralPath $target)) { Write-Host "Creating $target for the compiler." }
 New-Item -ItemType Directory -Force -Path $target | Out-Null
@@ -272,7 +308,7 @@ $props = @"
 $props = $props.Trim() + "`r`n"
 $utf8 = New-Object System.Text.UTF8Encoding $false
 [IO.File]::WriteAllText((Join-Path $target "Directory.Build.targets"), $props, $utf8)
-Clear-RenamedFolderCaches $target
+Clear-RenamedFolderCaches $target $root
 foreach ($dir in @(Find-BrokenWhisperBuilds $target)) {
     Write-Host "Removing a half-finished Whisper build that used the broken compiler flags."
     cmd /c "attrib -r `"$dir`" /s /d & rmdir /s /q `"$dir`"" | Out-Null
@@ -319,7 +355,7 @@ if ($LASTEXITCODE) { throw "publishing failed" }
 Write-Host "Published $Tag"
 
 # Keep a copy next to the older installers when that folder is on this PC.
-$shelf = "Z:\Projects\Seda\installer"
+$shelf = $layout.Shelf
 if (Test-Path -LiteralPath $shelf) {
     Copy-Item -LiteralPath $installer -Destination (Join-Path $shelf "Seda_${Version}_x64-setup.exe") -Force
     Write-Host "Saved installer to $shelf"

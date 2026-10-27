@@ -1,13 +1,13 @@
 # Build settings for Windows. Adjust the paths below to where these tools are installed on your PC.
 [build]
 # Z: is the network folder \\10.1.20.4\Ai Projects. Windows counts that full
-# name, and a folder can be at most 248 characters. Compiler output stays in
-# this project. The shader tool uses SEDA_SHADER_DIR because its test compile
-# is too deep to live under the compiler folder.
-target-dir = "Z:/Projects/Seda/b"
+# name, and a folder can be at most 248 characters. These paths are relative
+# to src-tauri, so they land next to the repo: Z:\Projects\Whisper\b today,
+# or Z:\Projects\Seda\b after the folder is renamed.
+target-dir = "../../b"
 
 [env]
-SEDA_SHADER_DIR = "Z:/Projects/Seda/shader"
+SEDA_SHADER_DIR = { value = "../../shader", relative = true }
 VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"
 CMAKE = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe"
 LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
