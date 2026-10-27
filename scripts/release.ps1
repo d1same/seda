@@ -186,6 +186,9 @@ function Invoke-SignInstaller([string] $Root, [string] $KeyPath, [string] $Versi
     $psi.Arguments = "`"$cli`" signer sign -f `"$KeyPath`" -p `"`" --app-version $Version `"$Installer`""
     $psi.WorkingDirectory = $Root
     $psi.UseShellExecute = $false
+    # The build step puts the key file in TAURI_SIGNING_PRIVATE_KEY. The signer
+    # treats that variable as the key text, so it clashes with the key file path.
+    [void]$psi.EnvironmentVariables.Remove("TAURI_SIGNING_PRIVATE_KEY")
     $proc = [Diagnostics.Process]::Start($psi)
     $proc.WaitForExit()
     if ($proc.ExitCode) { throw "signing failed" }
