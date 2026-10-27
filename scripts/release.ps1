@@ -262,14 +262,18 @@ if (-not $layout.Allowed) { throw "Run this from Z:\Projects\Whisper\seda. This 
 # Leftovers from earlier copies. Compiler output stays next to the repo.
 function Remove-OldFolder([string] $dir) {
     if (-not (Test-Path -LiteralPath $dir)) { return }
+    Write-Host "Removing $dir"
     cmd /c "attrib -r `"$dir`" /s /d & rmdir /s /q `"$dir`"" | Out-Null
     if (Test-Path -LiteralPath $dir) { Write-Host "Could not remove $dir. Close anything using it and delete that folder by hand." }
-    else { Write-Host "Removed old folder $dir" }
+    else { Write-Host "Removed $dir" }
 }
-Remove-OldFolder "C:\seda"
-Remove-OldFolder "C:\s"
-Remove-OldFolder "Z:\b"
-Remove-OldFolder "Z:\Projects\Whisper\build"
+if ($SkipBuild) { Write-Host "Signing the installer that is already built." }
+else {
+    Remove-OldFolder "C:\seda"
+    Remove-OldFolder "C:\s"
+    Remove-OldFolder "Z:\b"
+    Remove-OldFolder "Z:\Projects\Whisper\build"
+}
 if ($CleanupOnly) { return }
 if (-not $Version -or -not $Notes) { throw "Pass -Version and -Notes." }
 
@@ -280,14 +284,20 @@ foreach ($f in "package.json", "src-tauri\tauri.conf.json") {
     if (-not (Select-String -Path (Join-Path $root $f) -Pattern "`"version`": `"$Version`"" -Quiet)) { throw "$f is not at version $Version" }
 }
 
+$target = $layout.Target
+$bundle = Join-Path $target "release\bundle\nsis"
+$installer = Join-Path $bundle "Seda_${Version}_x64-setup.exe"
+
 # The Windows build needs the Microsoft linker. A GNU Rust toolchain calls dlltool.exe and stops.
-if (-not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
+if (-not $SkipBuild -and -not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
     $vs = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1"
     if (Test-Path -LiteralPath $vs) { & $vs -Arch amd64 }
 }
-rustup toolchain install stable-x86_64-pc-windows-msvc
-if ($LASTEXITCODE) { throw "Microsoft Rust toolchain is not installed" }
-$env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
+if (-not $SkipBuild) {
+    rustup toolchain install stable-x86_64-pc-windows-msvc
+    if ($LASTEXITCODE) { throw "Microsoft Rust toolchain is not installed" }
+    $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
+}
 
 # Signed build. Path remapping keeps this PC's folder names out of the program file.
 $env:TAURI_SIGNING_PRIVATE_KEY = $key
@@ -309,7 +319,7 @@ foreach ($name in @("CL", "_CL_")) {
 $env:TrackFileAccess = "false"
 $env:MSBUILDDISABLENODEREUSE = "1"
 
-$target = $layout.Target
+if (-not $SkipBuild) {
 $shader = $layout.Shader -replace '\\', '/'
 $env:CARGO_TARGET_DIR = $target -replace '\\', '/'
 $env:CARGO_BUILD_TARGET_DIR = $env:CARGO_TARGET_DIR
@@ -348,8 +358,7 @@ foreach ($dir in @(Find-BrokenWhisperBuilds $target)) {
         if (Test-Path -LiteralPath $fp) { Write-Host "Could not remove $fp. Close anything using it and delete that folder by hand." }
     }
 }
-$bundle = Join-Path $target "release\bundle\nsis"
-$installer = Join-Path $bundle "Seda_${Version}_x64-setup.exe"
+}
 if (-not $SkipBuild) {
     Repair-VulkanShaderSteps $target
     $log = Join-Path $target "release-build.log"
