@@ -49,6 +49,7 @@ Set the same version in `package.json`, `src-tauri/tauri.conf.json`, and `src-ta
 
 ```powershell
 cd Z:\Projects\Whisper\seda
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 Set-Content notes.md "What changed, in one or two sentences."
 .\scripts\release.ps1 -Version 0.2.10 -Notes notes.md
 ```
@@ -59,6 +60,7 @@ If the installer is already built, sign and publish that file:
 
 ```powershell
 cd Z:\Projects\Whisper\seda
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\release.ps1 -Version 0.2.10 -Notes notes.md -SkipBuild
 ```
 
