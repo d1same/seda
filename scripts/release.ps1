@@ -1,6 +1,7 @@
 # Build, sign and publish a Seda release to GitHub (d1same/seda).
 #
 #   ./scripts/release.ps1 -Version 0.1.3 -Notes notes.md
+#   ./scripts/release.ps1 -Version 0.1.3 -Notes notes.md -SkipBuild
 #   ./scripts/release.ps1 -CleanupOnly
 #
 # Needs: the update signing key at $env:USERPROFILE\.tauri\seda-updater.key (never commit it; back it
@@ -15,7 +16,8 @@ param(
     [switch] $Prerelease,   # test releases: not picked up by /releases/latest
     [string] $Tag = "v$Version",
     [string] $Features = "",  # e.g. "test-hooks" for test builds only
-    [switch] $CleanupOnly    # only delete leftover folders, then stop
+    [switch] $CleanupOnly,   # only delete leftover folders, then stop
+    [switch] $SkipBuild      # sign and publish the installer that is already built
 )
 function Get-BuildErrorLines([string] $LogPath) {
     $header = "Build failed. Full log: $LogPath"
@@ -165,6 +167,23 @@ function Clear-RenamedFolderCaches([string] $TargetDir, [string] $RepoRoot) {
     }
 }
 
+function Get-TauriCli([string] $Root) {
+    foreach ($name in @("tauri.js", "main.js")) {
+        $path = Join-Path $Root "node_modules\@tauri-apps\cli\$name"
+        if (Test-Path -LiteralPath $path) { return $path }
+    }
+    throw "Tauri's command was not found. Run npm install in the project folder."
+}
+
+# An empty password variable is deleted by Windows before Tauri starts, and Tauri
+# then asks for a password. Passing -p as its own argument keeps the empty password.
+function Invoke-SignInstaller([string] $Root, [string] $KeyPath, [string] $Version, [string] $Installer) {
+    $cli = Get-TauriCli $Root
+    Write-Host "Signing the installer."
+    & node $cli signer sign -f $KeyPath -p "" --app-version $Version $Installer
+    if ($LASTEXITCODE) { throw "signing failed" }
+}
+
 function Invoke-Logged([string] $WorkDir, [string] $LogPath, [string] $CommandLine, [string] $Shell = "cmd.exe", [string] $ShellArgs = "") {
     $utf8 = New-Object System.Text.UTF8Encoding $false
     $writer = New-Object System.IO.StreamWriter($LogPath, $false, $utf8)
@@ -262,7 +281,7 @@ $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
 
 # Signed build. Path remapping keeps this PC's folder names out of the program file.
 $env:TAURI_SIGNING_PRIVATE_KEY = $key
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
 $env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~ --remap-path-prefix=$root=seda"
 # The shader tool builds in the shader folder next to the repo. Tracking stays off so a deep
 # test compile does not trip MSBuild's file tracker.
@@ -319,23 +338,31 @@ foreach ($dir in @(Find-BrokenWhisperBuilds $target)) {
         if (Test-Path -LiteralPath $fp) { Write-Host "Could not remove $fp. Close anything using it and delete that folder by hand." }
     }
 }
-Repair-VulkanShaderSteps $target
-$log = Join-Path $target "release-build.log"
-$npm = "npm run tauri build"
-if ($Features) { $npm += " -- --features $Features" }
-Push-Location $root
-# npm/cargo print progress on stderr; Windows PowerShell would treat that as a failure, so rely on exit codes.
-$ErrorActionPreference = "Continue"
-try {
-    $code = Invoke-Logged $root $log $npm
-    if ($code -ne 0) {
-        Get-BuildErrorLines $log | ForEach-Object { Write-Host $_ }
-        throw "build failed"
-    }
-} finally { Pop-Location; $ErrorActionPreference = "Stop" }
-
 $bundle = Join-Path $target "release\bundle\nsis"
 $installer = Join-Path $bundle "Seda_${Version}_x64-setup.exe"
+if (-not $SkipBuild) {
+    Repair-VulkanShaderSteps $target
+    $log = Join-Path $target "release-build.log"
+    $npm = "npm run tauri build"
+    if ($Features) { $npm += " -- --features $Features" }
+    Push-Location $root
+    # npm/cargo print progress on stderr; Windows PowerShell would treat that as a failure, so rely on exit codes.
+    # CI tells Tauri the key password is empty. An empty password variable does not survive
+    # the Windows command that runs the build, so Tauri would ask and never see Enter.
+    $ErrorActionPreference = "Continue"
+    $env:CI = "true"
+    try {
+        $code = Invoke-Logged $root $log $npm
+        if ($code -ne 0) {
+            Get-BuildErrorLines $log | ForEach-Object { Write-Host $_ }
+            throw "build failed"
+        }
+    } finally { Remove-Item Env:CI -ErrorAction SilentlyContinue; Pop-Location; $ErrorActionPreference = "Stop" }
+}
+if (-not (Test-Path -LiteralPath $installer)) { throw "Installer was not found at $installer" }
+if ($SkipBuild -or -not (Test-Path -LiteralPath "$installer.sig")) {
+    Invoke-SignInstaller $root $key $Version $installer
+}
 $sig = [IO.File]::ReadAllText("$installer.sig")
 
 # latest.json: what installed copies check. The signature is verified against the public key in the app.
