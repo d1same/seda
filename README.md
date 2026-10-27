@@ -4,7 +4,7 @@
 
 Private voice typing and meeting notes for Windows. Everything runs on your own computer: nothing you say is uploaded.
 
-**[Download the installer](https://github.com/d1same/seda/releases/latest)** (Windows 10/11, 64-bit)
+**[Download the installer](https://github.com/d1same/seda/releases/latest)** (Windows 10/11, 64-bit). That file is what other people install. They run it; they do not need this repository.
 
 - **Dictation anywhere.** Hold a shortcut (any key or mouse button, e.g. Mouse 4) and talk. The capsule shows the words while you are still holding. Let go and they paste at the cursor right away. Say "no wait…" and Seda drops the part you took back.
 - **English + one more language.** Mix them in the same sentence. Persian has its own fine-tuned speech model; Chinese, Hindi, Spanish, Arabic, French, Portuguese, Russian, German, Japanese and Greek use the multilingual one.
@@ -58,7 +58,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\release.ps1 -Version 0.2.11 -Notes notes.md
 ```
 
-The script sets `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` to the version you pass. The build takes several minutes. When the window says to expect a password, press Enter. The password is empty. GitHub gets the installer and `latest.json`, and a copy is saved in `Z:\Projects\Whisper\installer`.
+The script sets `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` to the version you pass. The build takes several minutes. When the window says to expect a password, press Enter. The password is empty. GitHub gets the installer and `latest.json`, and a copy is saved in `Z:\Projects\Whisper\installer`. The release tag is the commit that was just built, so the download link above serves that installer.
 
 You should see `Set package.json to 0.2.11.` and later `Press Enter at the password question.` A cursor sitting on the command line means that command has not been submitted yet.
 
@@ -95,7 +95,7 @@ These are the stops from the 0.2.10 publish. The current script already avoids t
 | `publishing failed` after a finished build | The tag already exists, or `gh` is logged out. `gh auth status`, then publish the next version with `-SkipBuild`. |
 | A path-length or `FTK1011` / `MSB6003` error on a `.tlog` | The shader tool builds in `Z:\Projects\Whisper\shader` for a release, and `shader-dev` for `npm run tauri dev`. Leave compiler files in `Z:\Projects\Whisper\b`. |
 | `does not match the source` … `vulkan-shaders` | The dev build picked up the release shader cache. `git pull`, then delete `Z:\Projects\Whisper\b\debug\build\whisper-rs-sys-*` and run `npm run tauri dev` again. |
-| `file watcher error: UNKNOWN` | The project is on a network folder. Vite says this and keeps going. The build has stopped only when the window returns to the prompt with `build failed`. |
+| `file watcher error: UNKNOWN` | Stop that window with Ctrl+C, `git pull`, then `npm run tauri dev` again. Vite polls the network folder, so those lines stay out of the log. The build has stopped only when the window returns to the prompt with `build failed`. |
 | `Rename-Item` says Access is denied on `Z:\Projects\Whisper` | A program still has that folder open. Publishing works from `Z:\Projects\Whisper\seda` with the folder under its current name. |
 
 ## Privacy

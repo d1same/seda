@@ -31,6 +31,9 @@ export default defineConfig(() => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+      // A network folder (Z:) cannot use the Windows folder watch. Polling stays quiet there.
+      usePolling: true,
+      interval: 1000,
     },
   },
 }));

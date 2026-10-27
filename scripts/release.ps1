@@ -441,6 +441,13 @@ $notesFile = Join-Path $bundle "release-notes.txt"
 
 Write-Host "Publishing $Tag."
 $ghArgs = @("release", "create", $Tag, $installer, $latestPath, "--repo", $Repo, "--title", "Seda $Version", "--notes-file", $notesFile)
+# Tag the commit that was just built. Without this, GitHub tags main, which can be an older copy.
+$built = ""
+try { $built = (& git -C $root rev-parse HEAD).Trim() } catch { $built = "" }
+if ($built) {
+    Write-Host "The GitHub tag points at $built."
+    $ghArgs += @("--target", $built)
+}
 if ($Prerelease) { $ghArgs += "--prerelease" }
 & gh @ghArgs
 if ($LASTEXITCODE) { throw "publishing failed" }

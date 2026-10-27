@@ -83,9 +83,8 @@ struct CallState {
     starting: bool,
 }
 
-/// Pop-up sizes (logical px): working capsule, capsule with a message, idle circle.
+/// Pop-up sizes (logical px): listening capsule, capsule with words, idle circle.
 const PILL: (f64, f64) = (148.0, 30.0);
-const PILL_WIDE: (f64, f64) = (300.0, 30.0);
 const PILL_TEXT: (f64, f64) = (420.0, 30.0);
 const PILL_IDLE: (f64, f64) = (48.0, 48.0);
 
@@ -537,22 +536,27 @@ impl Core {
                 if l.done >= snap.len() {
                     continue;
                 }
-                let tail = &snap[l.done..];
-                let asr = me.asr.read();
-                let Some(asr) = asr.as_ref() else { break };
-                if let Some(cut) = asr.pause_cut(tail) {
+                let from = l.done;
+                // The speech lock is released before the capsule updates. Finishing still waits:
+                // this loop holds `l` until the chunk is done.
+                let step = {
+                    let guard = me.asr.read();
+                    let Some(asr) = guard.as_ref() else { break };
+                    // `cut` counts samples from `from`, the start of this tail.
+                    let Some(cut) = asr.pause_cut(&snap[from..]) else { continue };
                     let t = Instant::now();
-                    let spoken = asr.transcribe(&tail[..cut], &language, &vocab);
-                    l.done += cut;
-                    if let Ok(text) = spoken {
-                        log::log(format!("live chunk {:.1}s → {} ms", cut as f32 / audio::RATE as f32, t.elapsed().as_millis()));
-                        if !text.trim().is_empty() {
-                            l.parts.push(text);
-                            let shown = l.parts.join(" ");
-                            drop(l);
-                            drop(asr);
-                            me.show_live(&shown);
-                        }
+                    let spoken = asr.transcribe(&snap[from..from + cut], &language, &vocab);
+                    (cut, t.elapsed(), spoken)
+                };
+                let (cut, took, spoken) = step;
+                l.done += cut;
+                if let Ok(text) = spoken {
+                    log::log(format!("live chunk {:.1}s → {} ms", cut as f32 / audio::RATE as f32, took.as_millis()));
+                    if !text.trim().is_empty() {
+                        l.parts.push(text);
+                        let shown = l.parts.join(" ");
+                        drop(l);
+                        me.show_live(&shown);
                     }
                 }
             }
