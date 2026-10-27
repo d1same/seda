@@ -7,7 +7,10 @@
 target-dir = "../../b"
 
 [env]
-SEDA_SHADER_DIR = { value = "../../shader", relative = true }
+# Dev uses shader-dev. A release build sets SEDA_SHADER_DIR to shader.
+# One shared folder makes CMake stop: the debug copy of whisper.cpp
+# does not match the release copy that wrote the cache.
+SEDA_SHADER_DIR = { value = "../../shader-dev", relative = true }
 VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"
 CMAKE = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe"
 LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"

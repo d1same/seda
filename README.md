@@ -72,7 +72,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 `-SkipBuild` prints `Signing the installer that is already built.` immediately.
 
-Compiler files stay in `Z:\Projects\Whisper\b`. The shader tool uses `Z:\Projects\Whisper\shader`. Both sit next to the repo, so `Z:\Projects\Seda\seda` works the same way after the parent folder is renamed. The signing key is `%USERPROFILE%\.tauri\seda-updater.key`. `gh auth status` has to show you logged in.
+Compiler files stay in `Z:\Projects\Whisper\b`. A release build's shader tool uses `Z:\Projects\Whisper\shader`. `npm run tauri dev` uses `Z:\Projects\Whisper\shader-dev`, so the two builds do not share one CMake cache. Both sit next to the repo, so `Z:\Projects\Seda\seda` works the same way after the parent folder is renamed. The signing key is `%USERPROFILE%\.tauri\seda-updater.key`. `gh auth status` has to show you logged in.
 
 ### If the window shows one of these
 
@@ -93,7 +93,9 @@ These are the stops from the 0.2.10 publish. The current script already avoids t
 | `Signing key not found` | The key stays at `%USERPROFILE%\.tauri\seda-updater.key`. |
 | `Tauri's command was not found` | Run `npm install` in the project folder. |
 | `publishing failed` after a finished build | The tag already exists, or `gh` is logged out. `gh auth status`, then publish the next version with `-SkipBuild`. |
-| A path-length or `FTK1011` / `MSB6003` error on a `.tlog` | The shader tool builds in `Z:\Projects\Whisper\shader`. Leave compiler files in `Z:\Projects\Whisper\b`. |
+| A path-length or `FTK1011` / `MSB6003` error on a `.tlog` | The shader tool builds in `Z:\Projects\Whisper\shader` for a release, and `shader-dev` for `npm run tauri dev`. Leave compiler files in `Z:\Projects\Whisper\b`. |
+| `does not match the source` … `vulkan-shaders` | The dev build picked up the release shader cache. `git pull`, then delete `Z:\Projects\Whisper\b\debug\build\whisper-rs-sys-*` and run `npm run tauri dev` again. |
+| `file watcher error: UNKNOWN` | The project is on a network folder. Vite says this and keeps going. The build has stopped only when the window returns to the prompt with `build failed`. |
 | `Rename-Item` says Access is denied on `Z:\Projects\Whisper` | A program still has that folder open. Publishing works from `Z:\Projects\Whisper\seda` with the folder under its current name. |
 
 ## Privacy

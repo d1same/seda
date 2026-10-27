@@ -367,6 +367,7 @@ if (-not $SkipBuild) {
 $shader = $layout.Shader -replace '\\', '/'
 $env:CARGO_TARGET_DIR = $target -replace '\\', '/'
 $env:CARGO_BUILD_TARGET_DIR = $env:CARGO_TARGET_DIR
+# Dev builds read shader-dev from .cargo/config.toml. This release build keeps shader.
 $env:SEDA_SHADER_DIR = $shader
 if (-not (Test-Path -LiteralPath $target)) { Write-Host "Creating $target for the compiler." }
 New-Item -ItemType Directory -Force -Path $target | Out-Null
