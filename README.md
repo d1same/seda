@@ -85,6 +85,7 @@ These are the stops from the 0.2.10 publish. The current script already avoids t
 | `package.json is not at version` | That is an old copy of the script. `git pull`, then run the command again. The current script writes the version. |
 | `notes.md still has the example sentence` | `notes.md` is still a sample. Replace it with the real change, then run the command again. |
 | `v0.2.10 is already published` | That version is on GitHub. Pass the next number, such as `0.2.11`. |
+| `gh : release not found` | That version is free. `git pull`, then run the publish command again. The check was stopping the script. |
 | Enter does nothing at `expect a prompt for password` | The password question was trapped in the build log. Pull the current script. It builds with `--no-sign`, then asks in this window. Press Enter. |
 | `a value is required for '--password'` | An empty `-p ""` was passed. Windows PowerShell drops that. The current script asks in the window and does not pass `-p`. |
 | `--private-key-path cannot be used with --private-key` | The key path was in `TAURI_SIGNING_PRIVATE_KEY` and also passed as a file. The script clears that variable before it signs. |

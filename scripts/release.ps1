@@ -64,8 +64,17 @@ function Read-ReleaseNotes([string] $NotesPath) {
 }
 
 function Test-ReleasePublished([string] $Repo, [string] $Tag) {
-    gh release view $Tag --repo $Repo --json tagName 1>$null 2>$null
-    return ($LASTEXITCODE -eq 0)
+    # A new version prints "release not found" on the error stream. Windows PowerShell
+    # stops the script on that line when ErrorActionPreference is Stop, so keep the
+    # message and decide from the exit code.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $null = & gh release view $Tag --repo $Repo --json tagName 2>&1
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        $ErrorActionPreference = $prev
+    }
 }
 
 function Get-BuildErrorLines([string] $LogPath) {
