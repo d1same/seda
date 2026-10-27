@@ -35,9 +35,11 @@ Requirements (Windows 10/11, x64):
 3. [LLVM](https://github.com/llvm/llvm-project/releases) (for `libclang`)
 4. [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)
 
-Check the tool paths in `src-tauri/.cargo/config.toml`, then, from `Z:\Projects\Whisper\seda`:
+Check the tool paths in `src-tauri/.cargo/config.toml`, then paste this. A new window refuses scripts until the second line. That includes `npm`, which Windows runs as `npm.ps1`.
 
 ```powershell
+cd Z:\Projects\Whisper\seda
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 npm install
 npm run tauri dev
 ```
@@ -79,7 +81,7 @@ These are the stops from the 0.2.10 publish. The current script already avoids t
 | What you see | What to do |
 |---|---|
 | `.\scripts\release.ps1` is not recognized | The window is outside the project. Start with `cd Z:\Projects\Whisper\seda`. |
-| Running scripts is disabled | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` in that window. It lasts until the window closes. |
+| Running scripts is disabled, or `npm.ps1 cannot be loaded` | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` in that window, then run the command again. It lasts until the window closes. Winget's `npm` is a script, so `npm run tauri dev` needs this too. |
 | `package.json is not at version` | That is an old copy of the script. `git pull`, then run the command again. The current script writes the version. |
 | `notes.md still has the example sentence` | `notes.md` is still a sample. Replace it with the real change, then run the command again. |
 | `v0.2.10 is already published` | That version is on GitHub. Pass the next number, such as `0.2.11`. |
