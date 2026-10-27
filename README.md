@@ -43,6 +43,25 @@ npm run tauri build
 
 The installer is written to `<target-dir>/release/bundle/nsis/`. For development: `npm run tauri dev`. Running `npm run dev` alone opens the interface in a browser with sample data.
 
+## Publish a release
+
+Run this from `Z:\Projects\Whisper\seda`. Set the same version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` first.
+
+```powershell
+Set-Content notes.md "What changed, in one or two sentences."
+.\scripts\release.ps1 -Version 0.2.10 -Notes notes.md
+```
+
+The build takes a while. When the window says to expect a password, press Enter. The password is empty. GitHub gets the installer and `latest.json`, and a copy is saved in `Z:\Projects\Whisper\installer`.
+
+If the installer is already built, sign and publish that file:
+
+```powershell
+.\scripts\release.ps1 -Version 0.2.10 -Notes notes.md -SkipBuild
+```
+
+Compiler files stay in `Z:\Projects\Whisper\b`. The shader tool uses `Z:\Projects\Whisper\shader`. The signing key is `%USERPROFILE%\.tauri\seda-updater.key`.
+
 ## Privacy
 
 - Audio, transcripts, notes and settings never leave your PC. The only network traffic is the one-time model download and a check on GitHub for new versions every few hours.

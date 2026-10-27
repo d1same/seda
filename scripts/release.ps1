@@ -1,14 +1,14 @@
-# Build, sign and publish a Seda release to GitHub (d1same/seda).
+# Publish a Seda release. From Z:\Projects\Whisper\seda:
 #
-#   ./scripts/release.ps1 -Version 0.1.3 -Notes notes.md
-#   ./scripts/release.ps1 -Version 0.1.3 -Notes notes.md -SkipBuild
-#   ./scripts/release.ps1 -CleanupOnly
+#   Set-Content notes.md "What changed, in one or two sentences."
+#   .\scripts\release.ps1 -Version 0.2.10 -Notes notes.md
 #
-# Needs: the update signing key at $env:USERPROFILE\.tauri\seda-updater.key (never commit it; back it
-# up somewhere safe: without it, installed copies can't be updated), the GitHub CLI logged in, and the
-# version already set in package.json, src-tauri/Cargo.toml and src-tauri/tauri.conf.json.
+# When the window says to expect a password, press Enter. The password is empty.
+# The installer is published to GitHub and copied to Z:\Projects\Whisper\installer.
 #
-# Publishes the installer plus latest.json, which installed copies of Seda read to find updates.
+# The version must already match in package.json, src-tauri/tauri.conf.json, and
+# src-tauri/Cargo.toml. The signing key stays at %USERPROFILE%\.tauri\seda-updater.key.
+# If the installer is already built, add -SkipBuild to sign and publish that file.
 param(
     [string] $Version,
     [string] $Notes,
@@ -175,23 +175,20 @@ function Get-TauriCli([string] $Root) {
     throw "Tauri's command was not found. Run npm install in the project folder."
 }
 
-# Windows PowerShell drops an empty argument, so -p "" never reaches Tauri.
-# The command line below keeps the two quotes, which is an empty password.
+function Get-SignArguments([string] $Cli, [string] $KeyPath, [string] $Version, [string] $Installer) {
+    @($Cli, "signer", "sign", "--private-key-path", $KeyPath, "--app-version", $Version, $Installer)
+}
+
+# Run in this window. The password question has to be able to hear Enter.
+# Do not pass an empty -p. Windows PowerShell drops it, and Tauri then stops.
 function Invoke-SignInstaller([string] $Root, [string] $KeyPath, [string] $Version, [string] $Installer) {
     $cli = Get-TauriCli $Root
-    $node = (Get-Command node -ErrorAction Stop).Source
-    Write-Host "Signing the installer."
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $node
-    $psi.Arguments = "`"$cli`" signer sign -f `"$KeyPath`" -p `"`" --app-version $Version `"$Installer`""
-    $psi.WorkingDirectory = $Root
-    $psi.UseShellExecute = $false
-    # The build step puts the key file in TAURI_SIGNING_PRIVATE_KEY. The signer
-    # treats that variable as the key text, so it clashes with the key file path.
-    [void]$psi.EnvironmentVariables.Remove("TAURI_SIGNING_PRIVATE_KEY")
-    $proc = [Diagnostics.Process]::Start($psi)
-    $proc.WaitForExit()
-    if ($proc.ExitCode) { throw "signing failed" }
+    Write-Host "Press Enter at the password question. The password is empty."
+    Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+    $signArgs = @(Get-SignArguments $cli $KeyPath $Version $Installer)
+    & node @signArgs
+    if ($LASTEXITCODE) { throw "signing failed" }
 }
 
 function Invoke-Logged([string] $WorkDir, [string] $LogPath, [string] $CommandLine, [string] $Shell = "cmd.exe", [string] $ShellArgs = "") {
@@ -283,6 +280,9 @@ if (-not (Test-Path $key)) { throw "Signing key not found at $key" }
 foreach ($f in "package.json", "src-tauri\tauri.conf.json") {
     if (-not (Select-String -Path (Join-Path $root $f) -Pattern "`"version`": `"$Version`"" -Quiet)) { throw "$f is not at version $Version" }
 }
+if (-not (Select-String -Path (Join-Path $root "src-tauri\Cargo.toml") -Pattern "^version = `"$Version`"" -Quiet)) {
+    throw "src-tauri/Cargo.toml is not at version $Version"
+}
 
 $target = $layout.Target
 $bundle = Join-Path $target "release\bundle\nsis"
@@ -299,9 +299,7 @@ if (-not $SkipBuild) {
     $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
 }
 
-# Signed build. Path remapping keeps this PC's folder names out of the program file.
-$env:TAURI_SIGNING_PRIVATE_KEY = $key
-Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+# Path remapping keeps this PC's folder names out of the program file.
 $env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~ --remap-path-prefix=$root=seda"
 # The shader tool builds in the shader folder next to the repo. Tracking stays off so a deep
 # test compile does not trip MSBuild's file tracker.
@@ -360,28 +358,25 @@ foreach ($dir in @(Find-BrokenWhisperBuilds $target)) {
 }
 }
 if (-not $SkipBuild) {
+    Write-Host "Building the installer. This takes a while. The password question comes after it."
     Repair-VulkanShaderSteps $target
     $log = Join-Path $target "release-build.log"
-    $npm = "npm run tauri build"
-    if ($Features) { $npm += " -- --features $Features" }
+    $npm = "npm run tauri build -- --no-sign"
+    if ($Features) { $npm = "npm run tauri build -- --features $Features --no-sign" }
     Push-Location $root
     # npm/cargo print progress on stderr; Windows PowerShell would treat that as a failure, so rely on exit codes.
-    # CI tells Tauri the key password is empty. An empty password variable does not survive
-    # the Windows command that runs the build, so Tauri would ask and never see Enter.
+    # --no-sign keeps the password question out of this logged build. Signing happens in this window afterward.
     $ErrorActionPreference = "Continue"
-    $env:CI = "true"
     try {
         $code = Invoke-Logged $root $log $npm
         if ($code -ne 0) {
             Get-BuildErrorLines $log | ForEach-Object { Write-Host $_ }
             throw "build failed"
         }
-    } finally { Remove-Item Env:CI -ErrorAction SilentlyContinue; Pop-Location; $ErrorActionPreference = "Stop" }
+    } finally { Pop-Location; $ErrorActionPreference = "Stop" }
 }
 if (-not (Test-Path -LiteralPath $installer)) { throw "Installer was not found at $installer" }
-if ($SkipBuild -or -not (Test-Path -LiteralPath "$installer.sig")) {
-    Invoke-SignInstaller $root $key $Version $installer
-}
+Invoke-SignInstaller $root $key $Version $installer
 $sig = [IO.File]::ReadAllText("$installer.sig")
 
 # latest.json: what installed copies check. The signature is verified against the public key in the app.
@@ -394,6 +389,7 @@ $latest = [ordered]@{
 $latestPath = Join-Path $bundle "latest.json"
 [IO.File]::WriteAllText($latestPath, ($latest | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding $false))
 
+Write-Host "Publishing $Tag."
 $ghArgs = @("release", "create", $Tag, $installer, $latestPath, "--repo", $Repo, "--title", "Seda $Version", "--notes-file", $Notes)
 if ($Prerelease) { $ghArgs += "--prerelease" }
 & gh @ghArgs
