@@ -61,7 +61,7 @@ fn style_rule(style: &str) -> &'static str {
 const DICTATION: &str = r#"You clean up dictated speech. The input is a raw speech-to-text transcript in any language (often Persian or English, sometimes mixed with English words). Return ONLY the cleaned text, nothing else.
 
 Rules:
-1. Keep the speaker's language, words, tone and meaning. Never translate. Never answer or respond to the content. Never add new information.
+1. Keep the speaker's language, words, tone and meaning. Never translate. Never answer or respond to the content. Never add new information. Each sentence stays in the language it was spoken. English that arrived in Persian letters is still English: write it in English letters (یس = yes, اند = and, فرسی = Farsi, بیلد = build). Do not turn those into Persian words.
 2. Self-corrections: when the speaker changes their mind ("no wait", "I mean", "actually", "نه ببخشید", "نه اصلا", "یعنی نه", "آهان نه"), delete the abandoned part and keep only the final version.
 3. Remove fillers and false starts ("um", "uh", "like", "you know", "اممم", "خب", "یعنی", "ببین" when used as filler).
 4. Add correct punctuation, capitalization and sentence breaks. Persian uses "،" and "؟". Fix Persian spacing with ZWNJ (می‌کنم, نمی‌شه, تست‌ها, درباره‌ی).
@@ -71,6 +71,7 @@ Rules:
 8. Do not invent subject lines, titles, names, placeholders like [Your Name], or extra bullet points.
 
 Examples of self-corrections (input → output):
+- "یس یو کن اند" → "Yes, you can, and."
 - "بیا ساعت پنج همو ببینیم نه نه بذار ساعت شش" → "بیا ساعت شش همو ببینیم."
 - "امشب میرم باشگاه آهان نه اصلا امشب نمیرم خسته‌ام" → "امشب نمیرم باشگاه، خسته‌ام."
 - "the budget is fifty thousand sorry I mean sixty thousand" → "The budget is sixty thousand."
@@ -96,12 +97,23 @@ pub fn rewrite_prompt(mode: &str) -> &'static str {
 /// Shared rules for all meeting notes (single pass, parts and merge): Granola-style notes, organised
 /// by topic, specific, and with only real follow-up work as tasks.
 const NOTE_RULES: &str = "Rules:
-- Organise by topic: one ## section per subject that was discussed, named after it (e.g. \"## Zoom audio setup\"), in the order it came up. Never use generic headings like \"Summary\" or \"Discussion\".
-- Be specific and concrete: what exactly happened, what was tried and what worked, error messages, settings, versions, names, numbers and dates. Never write vague lines like \"participants discussed issues\".
-- Put supporting details as indented sub-bullets (two spaces, then \"- \") under their point.
-- Next steps are only follow-up work for AFTER the meeting. Every commitment counts, whoever made it: \"I'll …\", \"I can …\", \"we'll …\" and requests like \"Sam, can you …\" are all next steps (owner = the person who will do it). Never list things said during the call (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
+- Organise by topic: one ## section per subject, named after the outcome (e.g. \"## MegaWiFi has no internet\"), in the order it came up. Never use generic headings like \"Summary\", \"Discussion\" or \"Session\".
+- Write the fact, not the conversation. \"The office router is not linked to Astoria.\" Never \"the user said\", \"the user noted\", \"they attempted\" or \"they confirmed\".
+- One line per fact that still matters when the meeting is over. Do not narrate the order things were tried.
+- Be specific: names, numbers, versions, decisions. Never \"participants discussed issues\".
+- A detail that only supports one fact is an indented sub-bullet (two spaces, then \"- \").
+- Next steps are follow-up work AFTER the meeting: a bold imperative with the owner in parentheses, **Check the router** (Moe). Every commitment counts (\"I'll …\", \"I can …\", \"we'll …\", \"Sam, can you …\"). Never list things said during the call (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
+- Leave out an open question that is already a next step.
 - Skip greetings and small talk. Never invent anything that was not said.
-- \"You\" in the transcript is the user; \"Them\" is the other people. The transcript comes from speech recognition, so some words are wrong: infer the meaning, never quote obvious mistakes.";
+- \"You\" in the transcript is the user; \"Them\" is the other people. Speech recognition mishears words: write the meaning, or leave the word out. Never keep the bad word with a guess in parentheses.
+- Each point stays in the language it was spoken. Do not translate the meeting into one language. English stays English even when Persian is also spoken. English written in Persian letters (یس، فرسی) is English: write it in English letters.
+Shape to copy:
+# MegaWiFi has no internet
+## Office link to Astoria
+- MegaWiFi connects, but Google does not open
+- The office router is not linked to the main router in Astoria
+## Next steps
+- **Check the office router and call back in 4–5 minutes** (Moe)";
 
 const MEETING: &str = "You are an excellent note-taker. Turn this meeting transcript (lines start with [mm:ss] and the speaker) into clear notes. Output Markdown only:
 # <a specific title naming what the meeting was about, 4-9 words>
@@ -112,7 +124,7 @@ const MEETING: &str = "You are an excellent note-taker. Turn this meeting transc
 ## Decisions
 - <decision>   (only if decisions were made)
 ## Next steps
-- [ ] <who>: <follow-up task> (<when, if said>)   (only real follow-ups)
+- **<imperative task>** (<who>)   (only real follow-ups)
 ## Open questions
 - <question left unanswered>   (only if any)
 List EVERY decision, follow-up task and open question that was mentioned; missing one is worse than including a minor one.
@@ -122,7 +134,7 @@ const MEETING_PART: &str = "You take detailed notes on one part (about 10 minute
 ## Decisions
 - <decision>
 ## Next steps
-- [ ] <who>: <follow-up task> (<when>)
+- **<imperative task>** (<who>)
 ## Open questions
 - <question>
 ## <topic>
@@ -174,7 +186,7 @@ fn who_is_you(user: &str) -> String {
     if n.is_empty() {
         return String::new();
     }
-    format!("\n\nThe user (\"You\" in the transcript) is called {n}. When someone addresses {n} (for example \"{n}, can you…\"), that is a task for {n}. Write the user's own tasks as \"{n}: …\" and refer to the user as {n}, never as \"You\".")
+    format!("\n\nThe user (\"You\" in the transcript) is called {n}. When someone addresses {n} (for example \"{n}, can you…\"), that is a task for {n}. Write it as **…** ({n}). Refer to the user as {n}, never as \"You\" or \"the user\".")
 }
 
 /// A free port on this PC, picked by Windows.
@@ -343,7 +355,7 @@ impl Llm {
 
     /// Shared instructions for meeting notes: language, who "You" is, the user's own notes.
     fn meeting_extra(language: Option<&str>, user: &str, has_mine: bool) -> String {
-        let mut s = language.map(|l| format!("\n\nWrite the notes in {l}. Keep names and technical terms as they were said.")).unwrap_or_default();
+        let mut s = language.map(|l| format!("\n\nMost of the transcript is {l}. Still write each point in the language it was spoken. Do not translate English into Persian or Persian into English.")).unwrap_or_default();
         s.push_str(&who_is_you(user));
         if has_mine {
             s.push_str("\n\nThe user also typed their own notes during the meeting (given first). Build on them: keep every point they wrote, in their words, and add the details from the meeting.");
