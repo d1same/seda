@@ -34,36 +34,64 @@ Requirements (Windows 10/11, x64):
 3. [LLVM](https://github.com/llvm/llvm-project/releases) (for `libclang`)
 4. [Vulkan SDK](https://vulkan.lunarg.com/sdk/home)
 
-Check the tool paths in `src-tauri/.cargo/config.toml`, then:
+Check the tool paths in `src-tauri/.cargo/config.toml`, then, from `Z:\Projects\Whisper\seda`:
 
-```bash
+```powershell
 npm install
-npm run tauri build
+npm run tauri dev
 ```
 
-The installer is written to `<target-dir>/release/bundle/nsis/`. For development: `npm run tauri dev`. Running `npm run dev` alone opens the interface in a browser with sample data.
+`npm run dev` alone opens the interface in a browser with sample data. A release installer is the publish command below. `npm run tauri build -- --no-sign` writes an unsigned installer at `Z:\Projects\Whisper\b\release\bundle\nsis\` and keeps the password question out of the build log.
 
 ## Publish a release
 
-Write what changed in `notes.md`. The script sets `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` to the version you pass. Paste this from any folder:
+0.2.10 is already published: https://github.com/d1same/seda/releases/tag/v0.2.10. The next release uses the next version number.
+
+Write the real change in `notes.md` before you run anything. That sentence is what installed copies show. Then paste this:
 
 ```powershell
 cd Z:\Projects\Whisper\seda
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\scripts\release.ps1 -Version 0.2.10 -Notes notes.md
+.\scripts\release.ps1 -Version 0.2.11 -Notes notes.md
 ```
 
-The build takes a while. When the window says to expect a password, press Enter. The password is empty. GitHub gets the installer and `latest.json`, and a copy is saved in `Z:\Projects\Whisper\installer`.
+The script sets `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` to the version you pass. The build takes several minutes. When the window says to expect a password, press Enter. The password is empty. GitHub gets the installer and `latest.json`, and a copy is saved in `Z:\Projects\Whisper\installer`.
 
-If the installer is already built, sign and publish that file:
+You should see `Set package.json to 0.2.11.` and later `Press Enter at the password question.` A cursor sitting on the command line means that command has not been submitted yet.
+
+If the installer for that version is already built, sign and publish that file:
 
 ```powershell
 cd Z:\Projects\Whisper\seda
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\scripts\release.ps1 -Version 0.2.10 -Notes notes.md -SkipBuild
+.\scripts\release.ps1 -Version 0.2.11 -Notes notes.md -SkipBuild
 ```
 
-Compiler files stay in `Z:\Projects\Whisper\b`. The shader tool uses `Z:\Projects\Whisper\shader`. The signing key is `%USERPROFILE%\.tauri\seda-updater.key`.
+`-SkipBuild` prints `Signing the installer that is already built.` immediately.
+
+Compiler files stay in `Z:\Projects\Whisper\b`. The shader tool uses `Z:\Projects\Whisper\shader`. Both sit next to the repo, so `Z:\Projects\Seda\seda` works the same way after the parent folder is renamed. The signing key is `%USERPROFILE%\.tauri\seda-updater.key`. `gh auth status` has to show you logged in.
+
+### If the window shows one of these
+
+These are the stops from the 0.2.10 publish. The current script already avoids them. `git pull` in `Z:\Projects\Whisper\seda` on branch `cursor/clickable-idle-dot-dabd` brings that script in.
+
+| What you see | What to do |
+|---|---|
+| `.\scripts\release.ps1` is not recognized | The window is outside the project. Start with `cd Z:\Projects\Whisper\seda`. |
+| Running scripts is disabled | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` in that window. It lasts until the window closes. |
+| `package.json is not at version` | That is an old copy of the script. `git pull`, then run the command again. The current script writes the version. |
+| `notes.md still has the example sentence` | `notes.md` is still a sample. Replace it with the real change, then run the command again. |
+| `v0.2.10 is already published` | That version is on GitHub. Pass the next number, such as `0.2.11`. |
+| Enter does nothing at `expect a prompt for password` | The password question was trapped in the build log. Pull the current script. It builds with `--no-sign`, then asks in this window. Press Enter. |
+| `a value is required for '--password'` | An empty `-p ""` was passed. Windows PowerShell drops that. The current script asks in the window and does not pass `-p`. |
+| `--private-key-path cannot be used with --private-key` | The key path was in `TAURI_SIGNING_PRIVATE_KEY` and also passed as a file. The script clears that variable before it signs. |
+| `git pull` says Already up to date, then the old error remains | The window is on an older commit. `git status` should show `cursor/clickable-idle-dot-dabd`, then `git pull`. |
+| `Run this from Z:\Projects\Whisper\seda` | This copy is outside the project. `Z:\Projects\Seda\seda` is accepted after a rename. |
+| `Signing key not found` | The key stays at `%USERPROFILE%\.tauri\seda-updater.key`. |
+| `Tauri's command was not found` | Run `npm install` in the project folder. |
+| `publishing failed` after a finished build | The tag already exists, or `gh` is logged out. `gh auth status`, then publish the next version with `-SkipBuild`. |
+| A path-length or `FTK1011` / `MSB6003` error on a `.tlog` | The shader tool builds in `Z:\Projects\Whisper\shader`. Leave compiler files in `Z:\Projects\Whisper\b`. |
+| `Rename-Item` says Access is denied on `Z:\Projects\Whisper` | A program still has that folder open. Publishing works from `Z:\Projects\Whisper\seda` with the folder under its current name. |
 
 ## Privacy
 

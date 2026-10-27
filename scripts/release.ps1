@@ -1,11 +1,13 @@
-# Publish a Seda release. Write what changed in notes.md, then paste this:
+# Publish a Seda release. 0.2.10 is already on GitHub. Write the real change
+# in notes.md, then paste this for the next release:
 #
 #   cd Z:\Projects\Whisper\seda
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-#   .\scripts\release.ps1 -Version 0.2.10 -Notes notes.md
+#   .\scripts\release.ps1 -Version 0.2.11 -Notes notes.md
 #
 # When the window says to expect a password, press Enter. The password is empty.
 # The installer is published to GitHub and copied to Z:\Projects\Whisper\installer.
+# README.md lists the errors from the 0.2.10 publish and what to do for each one.
 #
 # -Version is written into package.json, src-tauri/tauri.conf.json, and
 # src-tauri/Cargo.toml. The signing key stays at
@@ -50,11 +52,20 @@ function Set-AppVersion([string] $Root, [string] $Version) {
 
 function Read-ReleaseNotes([string] $NotesPath) {
     $noteText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $NotesPath)).Trim()
-    if ($noteText -eq "What changed, in one or two sentences.") {
+    $examples = @(
+        "What changed, in one or two sentences.",
+        "Say what changed in this release."
+    )
+    if ($examples -contains $noteText) {
         throw "notes.md still has the example sentence. Write what changed, then run this again."
     }
     if (-not $noteText) { throw "notes.md is empty. Write what changed, then run this again." }
     return $noteText
+}
+
+function Test-ReleasePublished([string] $Repo, [string] $Tag) {
+    gh release view $Tag --repo $Repo --json tagName 1>$null 2>$null
+    return ($LASTEXITCODE -eq 0)
 }
 
 function Get-BuildErrorLines([string] $LogPath) {
@@ -315,6 +326,7 @@ $noteText = Read-ReleaseNotes $Notes
 
 $key = Join-Path $env:USERPROFILE ".tauri\seda-updater.key"
 if (-not (Test-Path $key)) { throw "Signing key not found at $key" }
+if (Test-ReleasePublished $Repo $Tag) { throw "$Tag is already published. Pass the next version." }
 
 Set-AppVersion $root $Version
 
