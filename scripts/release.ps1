@@ -220,6 +220,7 @@ $env:TrackFileAccess = "false"
 $env:MSBUILDDISABLENODEREUSE = "1"
 
 $target = (Select-String -Path (Join-Path $root "src-tauri\.cargo\config.toml") -Pattern 'target-dir\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+if (-not (Test-Path -LiteralPath $target)) { Write-Host "Creating $target for the compiler." }
 New-Item -ItemType Directory -Force -Path $target | Out-Null
 # Imported by every MSBuild project under the compiler folder. Custom steps wait
 # their turn, and the file tracker stays off.
