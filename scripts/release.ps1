@@ -175,13 +175,20 @@ function Get-TauriCli([string] $Root) {
     throw "Tauri's command was not found. Run npm install in the project folder."
 }
 
-# An empty password variable is deleted by Windows before Tauri starts, and Tauri
-# then asks for a password. Passing -p as its own argument keeps the empty password.
+# Windows PowerShell drops an empty argument, so -p "" never reaches Tauri.
+# The command line below keeps the two quotes, which is an empty password.
 function Invoke-SignInstaller([string] $Root, [string] $KeyPath, [string] $Version, [string] $Installer) {
     $cli = Get-TauriCli $Root
+    $node = (Get-Command node -ErrorAction Stop).Source
     Write-Host "Signing the installer."
-    & node $cli signer sign -f $KeyPath -p "" --app-version $Version $Installer
-    if ($LASTEXITCODE) { throw "signing failed" }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $node
+    $psi.Arguments = "`"$cli`" signer sign -f `"$KeyPath`" -p `"`" --app-version $Version `"$Installer`""
+    $psi.WorkingDirectory = $Root
+    $psi.UseShellExecute = $false
+    $proc = [Diagnostics.Process]::Start($psi)
+    $proc.WaitForExit()
+    if ($proc.ExitCode) { throw "signing failed" }
 }
 
 function Invoke-Logged([string] $WorkDir, [string] $LogPath, [string] $CommandLine, [string] $Shell = "cmd.exe", [string] $ShellArgs = "") {
