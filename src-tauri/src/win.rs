@@ -150,7 +150,7 @@ pub fn text_before_caret(max_chars: usize) -> String {
     };
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let Ok(auto) = CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None::<windows::core::IUnknown>, CLSCTX_INPROC_SERVER) else {
+        let Ok(auto) = CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None::<&windows::core::IUnknown>, CLSCTX_INPROC_SERVER) else {
             return String::new();
         };
         let Ok(focused) = auto.GetFocusedElement() else { return String::new() };

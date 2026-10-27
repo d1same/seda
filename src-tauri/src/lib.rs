@@ -633,6 +633,30 @@ impl Core {
         Ok((raw, smart::expand_snippets(&fixed, &refs), asr_ms))
     }
 
+    /// The Engine test: the same speech, snippets, and cleanup as a dictation, without pasting.
+    fn transcribe_and_clean(&self, samples: &[f32], style: &str) -> Result<(String, String, i64, i64), String> {
+        let (raw, draft, asr_ms) = self.transcribe_draft(samples, None)?;
+        if draft.trim().is_empty() {
+            return Ok((raw, String::new(), asr_ms, 0));
+        }
+        let s = self.settings.read().clone();
+        let quick = finish_sentence(&draft);
+        if !s.cleanup {
+            return Ok((raw, quick, asr_ms, 0));
+        }
+        let t = Instant::now();
+        let vocab = self.vocab();
+        let keep: Vec<String> = self.snippet_pairs().into_iter().map(|(_, paste)| paste).filter(|p| quick.contains(p.as_str())).collect();
+        let text = match self.llm.lock().as_mut() {
+            Some(llm) => match llm.cleanup(&draft, style, &vocab, s.latin_tech_terms, "", &keep) {
+                Ok(clean) if !clean.is_empty() => self.store.apply_fixes(&clean),
+                _ => quick,
+            },
+            None => quick,
+        };
+        Ok((raw, text, asr_ms, t.elapsed().as_millis() as i64))
+    }
+
     fn snippet_pairs(&self) -> Vec<(String, String)> {
         let s = self.settings.read();
         let mut pairs = Vec::new();
@@ -1065,7 +1089,7 @@ async fn test_file(core: State<'_, Arc<Core>>, window: tauri::WebviewWindow, pat
     tauri::async_runtime::spawn_blocking(move || {
         let samples = audio::load_wav(path.trim().trim_matches('"')).map_err(|e| format!("Couldn't read the file: {e}"))?;
         let secs = samples.len() as f64 / audio::RATE as f64;
-        let (raw, text, asr_ms, llm_ms) = core.transcribe_and_clean(&samples, &style, None, || {})?;
+        let (raw, text, asr_ms, llm_ms) = core.transcribe_and_clean(&samples, &style)?;
         Ok(TestResult { raw, text, asr_ms, llm_ms, secs })
     })
     .await
@@ -1989,7 +2013,7 @@ fn tauri_main() {
                                     Ok(samples) => {
                                         let secs = samples.len() as f64 / audio::RATE as f64;
                                         c.pill("transcribing", "Test", "");
-                                        c.process(samples, secs, "notepad.exe".into(), "Test".into(), "Test".into(), None, None);
+                                        c.process(samples, secs, "notepad.exe".into(), "Test".into(), "Test".into(), None, None, String::new());
                                     }
                                     Err(e) => log::log(format!("test wav: {e}")),
                                 }
