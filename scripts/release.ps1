@@ -1,5 +1,6 @@
-# Publish a Seda release. From Z:\Projects\Whisper\seda:
+# Publish a Seda release. Paste this from any folder:
 #
+#   cd Z:\Projects\Whisper\seda
 #   Set-Content notes.md "What changed, in one or two sentences."
 #   .\scripts\release.ps1 -Version 0.2.10 -Notes notes.md
 #

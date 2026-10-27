@@ -45,9 +45,10 @@ The installer is written to `<target-dir>/release/bundle/nsis/`. For development
 
 ## Publish a release
 
-Run this from `Z:\Projects\Whisper\seda`. Set the same version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` first.
+Set the same version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml` first. `0.2.10` below means that version. Paste this from any folder:
 
 ```powershell
+cd Z:\Projects\Whisper\seda
 Set-Content notes.md "What changed, in one or two sentences."
 .\scripts\release.ps1 -Version 0.2.10 -Notes notes.md
 ```
@@ -57,6 +58,7 @@ The build takes a while. When the window says to expect a password, press Enter.
 If the installer is already built, sign and publish that file:
 
 ```powershell
+cd Z:\Projects\Whisper\seda
 .\scripts\release.ps1 -Version 0.2.10 -Notes notes.md -SkipBuild
 ```
 
