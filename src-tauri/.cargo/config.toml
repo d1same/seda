@@ -10,7 +10,13 @@ CMAKE = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Com
 LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
 # MSBuild's file tracker still dies on the Vulkan try-compile path (FTK1011)
 # even in this short folder. Turning tracking off is the fix whisper-rs documents.
-# /FS stops the parallel compile from fighting over one .pdb once tracking is off.
 TrackFileAccess = "false"
-CMAKE_C_FLAGS = "/FS /DWIN32 /D_WINDOWS"
-CMAKE_CXX_FLAGS = "/FS /DWIN32 /D_WINDOWS /GR /EHsc"
+# /FS must not be passed as CMAKE_C_FLAGS or CMAKE_CXX_FLAGS. whisper-rs-sys
+# forwards every CMAKE_ variable, and the cmake crate then skips its own flags,
+# including /utf-8. CL is added by the compiler on top of those flags.
+CL = "/FS"
+_CL_ = "/FS"
+# Pin the policies Whisper leaves unset, so the log keeps today's behavior
+# and drops the CMP0128 / CMP0156 developer warnings.
+CMAKE_POLICY_DEFAULT_CMP0128 = "OLD"
+CMAKE_POLICY_DEFAULT_CMP0156 = "OLD"
