@@ -93,15 +93,38 @@ function Repair-VulkanShaderSteps([string] $TargetDir) {
         }
     }
     $changed = $false
-    $needle = "cmake_policy(SET CMP0147 NEW)"
+    $prefixLine = '        PREFIX "$ENV{SEDA_SHADER_DIR}"'
     foreach ($file in $lists) {
         if (-not $file) { continue }
         $text = [IO.File]::ReadAllText($file.FullName)
-        if (-not $text.Contains($needle)) { continue }
-        [IO.File]::WriteAllText($file.FullName, $text.Replace($needle, "cmake_policy(SET CMP0147 OLD)"), $utf8)
+        $next = $text.Replace("cmake_policy(SET CMP0147 NEW)", "cmake_policy(SET CMP0147 OLD)")
+        if (-not $next.Contains($prefixLine)) {
+            $crlf = "vulkan-shaders-gen`r`n        SOURCE_DIR"
+            $lf = "vulkan-shaders-gen`n        SOURCE_DIR"
+            if ($next.Contains($crlf)) {
+                $next = $next.Replace($crlf, "vulkan-shaders-gen`r`n$prefixLine`r`n        SOURCE_DIR")
+            } elseif ($next.Contains($lf)) {
+                $next = $next.Replace($lf, "vulkan-shaders-gen`n$prefixLine`n        SOURCE_DIR")
+            }
+        }
+        if ($next -eq $text) { continue }
+        [IO.File]::WriteAllText($file.FullName, $next, $utf8)
         $changed = $true
     }
-    if ($changed) { Write-Host "The shader tool was being configured and installed at the same time. That step now waits its turn." }
+    if ($changed) { Write-Host "The shader tool now builds in its own short folder and waits its turn." }
+}
+
+# A renamed project folder leaves compiler notes that still say Whisper.
+function Clear-RenamedFolderCaches([string] $TargetDir) {
+    if (-not $TargetDir -or -not (Test-Path -LiteralPath $TargetDir)) { return }
+    $caches = @(Get-ChildItem -Path (Join-Path $TargetDir "release\build\whisper-rs-sys-*\out\build\CMakeCache.txt") -File -ErrorAction SilentlyContinue)
+    foreach ($cache in $caches) {
+        if (-not $cache) { continue }
+        $text = [IO.File]::ReadAllText($cache.FullName)
+        if ($text -notmatch 'Projects[\\/]Whisper') { continue }
+        Write-Host "Removing a compiler cache that still points at the Whisper folder."
+        Remove-BuildTree (Split-Path $cache.FullName -Parent)
+    }
 }
 
 function Invoke-Logged([string] $WorkDir, [string] $LogPath, [string] $CommandLine, [string] $Shell = "cmd.exe", [string] $ShellArgs = "") {
@@ -167,11 +190,10 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $full = [IO.Path]::GetFullPath($root).TrimEnd('\')
-$onSeda = ($full -eq "Z:\Projects\Whisper\seda") -or ($full -eq "\\10.1.20.4\Ai Projects\Projects\Whisper\seda")
-if (-not $onSeda) { throw "Run this from Z:\Projects\Whisper\seda. This copy is $full." }
+$onSeda = ($full -eq "Z:\Projects\Seda\seda") -or ($full -eq "\\10.1.20.4\Ai Projects\Projects\Seda\seda")
+if (-not $onSeda) { throw "Run this from Z:\Projects\Seda\seda. Rename Z:\Projects\Whisper to Z:\Projects\Seda, then run it again. This copy is $full." }
 
-# Leftovers from earlier copies. The compiler output is Z:\b. The longer
-# Projects\Whisper\b folder makes the shader path too long. The installer shelf stays.
+# Leftovers from earlier copies. Compiler output stays in Z:\Projects\Seda\b.
 function Remove-OldFolder([string] $dir) {
     if (-not (Test-Path -LiteralPath $dir)) { return }
     cmd /c "attrib -r `"$dir`" /s /d & rmdir /s /q `"$dir`"" | Out-Null
@@ -180,6 +202,7 @@ function Remove-OldFolder([string] $dir) {
 }
 Remove-OldFolder "C:\seda"
 Remove-OldFolder "C:\s"
+Remove-OldFolder "Z:\b"
 Remove-OldFolder "Z:\Projects\Whisper\build"
 if ($CleanupOnly) { return }
 if (-not $Version -or -not $Notes) { throw "Pass -Version and -Notes." }
@@ -204,7 +227,8 @@ $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
 $env:TAURI_SIGNING_PRIVATE_KEY = $key
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 $env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~ --remap-path-prefix=$root=seda"
-# The Vulkan shader try-compile path is still too long for MSBuild's file tracker.
+# The shader tool builds in Z:\Projects\Seda\shader. Tracking stays off so a deep
+# test compile does not trip MSBuild's file tracker.
 # Do not set CMAKE_C_FLAGS or CMAKE_CXX_FLAGS here. whisper-rs-sys copies those into
 # cmake, and cmake then drops its own flags, including /utf-8. /FS rides in CL instead.
 foreach ($name in @("CMAKE_C_FLAGS", "CMAKE_CXX_FLAGS")) {
@@ -219,9 +243,16 @@ foreach ($name in @("CL", "_CL_")) {
 $env:TrackFileAccess = "false"
 $env:MSBUILDDISABLENODEREUSE = "1"
 
-$target = (Select-String -Path (Join-Path $root "src-tauri\.cargo\config.toml") -Pattern 'target-dir\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+$config = Join-Path $root "src-tauri\.cargo\config.toml"
+$target = (Select-String -Path $config -Pattern 'target-dir\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+$shaderMatch = Select-String -Path $config -Pattern 'SEDA_SHADER_DIR\s*=\s*"([^"]+)"'
+if (-not $shaderMatch) { throw "src-tauri/.cargo/config.toml is missing SEDA_SHADER_DIR." }
+$shader = $shaderMatch.Matches[0].Groups[1].Value
+$env:SEDA_SHADER_DIR = $shader
 if (-not (Test-Path -LiteralPath $target)) { Write-Host "Creating $target for the compiler." }
 New-Item -ItemType Directory -Force -Path $target | Out-Null
+if (-not (Test-Path -LiteralPath $shader)) { Write-Host "Creating $shader for the shader tool." }
+New-Item -ItemType Directory -Force -Path $shader | Out-Null
 # Imported by every MSBuild project under the compiler folder. Custom steps wait
 # their turn, and the file tracker stays off.
 $props = @"
@@ -241,6 +272,7 @@ $props = @"
 $props = $props.Trim() + "`r`n"
 $utf8 = New-Object System.Text.UTF8Encoding $false
 [IO.File]::WriteAllText((Join-Path $target "Directory.Build.targets"), $props, $utf8)
+Clear-RenamedFolderCaches $target
 foreach ($dir in @(Find-BrokenWhisperBuilds $target)) {
     Write-Host "Removing a half-finished Whisper build that used the broken compiler flags."
     cmd /c "attrib -r `"$dir`" /s /d & rmdir /s /q `"$dir`"" | Out-Null
@@ -286,11 +318,8 @@ if ($Prerelease) { $ghArgs += "--prerelease" }
 if ($LASTEXITCODE) { throw "publishing failed" }
 Write-Host "Published $Tag"
 
-# The build above wrote the compiler output to Z:\b. The longer folder can go.
-if ($target -eq "Z:/b" -or $target -eq "Z:\b") { Remove-OldFolder "Z:\Projects\Whisper\b" }
-
 # Keep a copy next to the older installers when that folder is on this PC.
-$shelf = "Z:\Projects\Whisper\installer"
+$shelf = "Z:\Projects\Seda\installer"
 if (Test-Path -LiteralPath $shelf) {
     Copy-Item -LiteralPath $installer -Destination (Join-Path $shelf "Seda_${Version}_x64-setup.exe") -Force
     Write-Host "Saved installer to $shelf"

@@ -1,16 +1,18 @@
 # Build settings for Windows. Adjust the paths below to where these tools are installed on your PC.
 [build]
 # Z: is the network folder \\10.1.20.4\Ai Projects. Windows counts that full
-# name, and a folder name can be at most 248 characters. Under Projects\Whisper
-# the shader tool lands at 253, so the compiler output is the short folder Z:/b.
-target-dir = "Z:/b"
+# name, and a folder can be at most 248 characters. Compiler output stays in
+# this project. The shader tool uses SEDA_SHADER_DIR because its test compile
+# is too deep to live under the compiler folder.
+target-dir = "Z:/Projects/Seda/b"
 
 [env]
+SEDA_SHADER_DIR = "Z:/Projects/Seda/shader"
 VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"
 CMAKE = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe"
 LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
-# MSBuild's file tracker still dies on the Vulkan try-compile path (FTK1011)
-# even in this short folder. Turning tracking off is the fix whisper-rs documents.
+# MSBuild's file tracker dies on the Vulkan test compile (FTK1011).
+# Turning tracking off is the fix whisper-rs documents.
 TrackFileAccess = "false"
 # /FS must not be passed as CMAKE_C_FLAGS or CMAKE_CXX_FLAGS. whisper-rs-sys
 # forwards every CMAKE_ variable, and the cmake crate then skips its own flags,
