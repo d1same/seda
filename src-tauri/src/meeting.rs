@@ -305,7 +305,9 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
     let mut guard = core.llm.lock();
     let llm = guard.as_mut().ok_or_else(|| anyhow::anyhow!("the writing AI isn't running"))?;
     let full = transcript_text(segs);
-    if parts.is_empty() && full.chars().count() <= SINGLE_PASS_CHARS {
+    // One note from the whole call, including a resume. Saved part notes are only for a long call
+    // that does not fit in one pass. A short resume must not keep the thin notes from the first half.
+    if full.chars().count() <= SINGLE_PASS_CHARS {
         return Ok((llm.meeting_single(&full, language, my_notes, &user, minutes)?, Vec::new(), 0.0));
     }
     let mut a = from;

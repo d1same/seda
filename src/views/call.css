@@ -16,6 +16,9 @@ html.view-call, html.view-call body, html.view-call #root { background: #141210 
   height: 26px; padding: 0 12px; border: 1px solid #3a352d; border-radius: 6px; background: transparent;
   color: #cfc6b5; font: 500 12px "IBM Plex Sans", sans-serif; cursor: pointer;
 }
-.call-acts button:hover { border-color: #6d6556; color: #efe7d8; }
+.call-acts button:hover:not(:disabled) { border-color: #6d6556; color: #efe7d8; }
+.call-acts button:disabled { opacity: 0.85; cursor: default; }
 .call-acts button.primary { background: #3ddc5c; border-color: #3ddc5c; color: #0c1a10; }
-.call-acts button.primary:hover { background: #57e674; }
+.call-acts button.primary:hover:not(:disabled) { background: #57e674; }
+.call-acts button.primary:active:not(:disabled) { background: #2fc44e; }
+.call-acts button.primary:disabled { background: #2fc44e; border-color: #2fc44e; color: #0c1a10; opacity: 1; }

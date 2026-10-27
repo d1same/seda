@@ -74,6 +74,9 @@ struct CallState {
     /// The meeting was started for this call, so it stops by itself when the call ends.
     linked: Option<&'static str>,
     gone_since: Option<Instant>,
+    /// The mic and speakers are still opening. The card already says notes are starting,
+    /// and this poll must not hide it or ask again until that open finishes.
+    starting: bool,
 }
 
 /// Pop-up sizes (logical px): working capsule, capsule with a message, idle circle.
@@ -1191,14 +1194,16 @@ fn diagnostics(core: CoreState) -> String {
 
 // ---------- meetings ----------
 
-#[tauri::command]
+/// Async: opening the mic and every speaker takes a second or two and must not freeze the window.
+#[tauri::command(async)]
 fn meeting_start(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
     only(&window, "main")?;
     start_meeting(core.inner())
 }
 
 /// Continue a stopped meeting: same transcript, clock and notepad; notes are rewritten at the end.
-#[tauri::command]
+/// Async for the same reason as meeting_start.
+#[tauri::command(async)]
 fn meeting_resume(core: CoreState, window: tauri::WebviewWindow, id: i64) -> Result<(), String> {
     only(&window, "main")?;
     let m = core.store.meeting(id).ok_or("Meeting not found")?;
@@ -1288,78 +1293,128 @@ impl Core {
     }
 }
 
-/// Every 2 s: is a call app using the microphone? Then ask (or just start), and stop a meeting
+/// How often to look at who is using the microphone. Short, so the card shows up
+/// soon after a call starts. A call still has to be gone for 12 s before notes stop.
+const CALL_POLL: Duration = Duration::from_millis(400);
+
+/// Is a call app using the microphone? Then ask (or just start), and stop a meeting
 /// that was started for a call once that call has ended.
 fn watch_calls(core: Arc<Core>) {
+    // The call window needs a moment to subscribe. After that, look often.
+    std::thread::sleep(Duration::from_millis(500));
     loop {
-        std::thread::sleep(Duration::from_secs(2));
-        let (mode, enabled) = {
-            let s = core.settings.read();
-            (s.meeting_detect.clone(), s.meeting_apps.clone())
-        };
-        let active: Vec<&detect::CallApp> =
-            if mode == "off" { Vec::new() } else { detect::active().into_iter().filter(|a| enabled.iter().any(|e| e == a.id)).collect() };
-        let is_active = |id: &str| active.iter().any(|a| a.id == id);
-        let running = core.meeting.lock().is_some();
-        let mut c = core.call.lock();
-        c.dismissed.retain(|d| is_active(d));
-        if let Some(a) = c.asking {
-            if !is_active(a) || running {
-                c.asking = None;
-                core.call_card("hidden", "");
-            }
-        }
-        if running {
-            let Some(id) = c.linked else { continue };
-            if is_active(id) {
-                c.gone_since = None;
-            } else if c.gone_since.get_or_insert_with(Instant::now).elapsed() > Duration::from_secs(12) {
-                drop(c);
-                let name = detect::by_id(id).map(|a| a.name).unwrap_or("call");
-                log::log(format!("call ended ({name}); stopping the meeting"));
-                stop_meeting(&core);
-                core.call_card("ended", name);
-            }
-            continue;
-        }
-        c.linked = None;
-        if c.asking.is_some() {
-            continue;
-        }
-        let Some(app) = active.iter().find(|a| !c.dismissed.contains(&a.id)) else { continue };
-        log::log(format!("call detected: {}", app.name));
-        if mode == "auto" {
-            c.linked = Some(app.id);
-            c.gone_since = None;
-            drop(c);
-            match start_meeting(&core) {
-                Ok(()) => core.call_card("recording", app.name),
-                Err(e) => log::log(format!("couldn't start meeting: {e}")),
-            }
-        } else {
-            c.asking = Some(app.id);
-            core.call_card("detected", app.name);
-        }
+        watch_calls_once(&core);
+        std::thread::sleep(CALL_POLL);
     }
 }
 
-/// "Start notes" on the call card.
-#[tauri::command]
+fn watch_calls_once(core: &Arc<Core>) {
+    let (mode, enabled) = {
+        let s = core.settings.read();
+        (s.meeting_detect.clone(), s.meeting_apps.clone())
+    };
+    let active: Vec<&detect::CallApp> =
+        if mode == "off" { Vec::new() } else { detect::active().into_iter().filter(|a| enabled.iter().any(|e| e == a.id)).collect() };
+    let is_active = |id: &str| active.iter().any(|a| a.id == id);
+    let running = core.meeting.lock().is_some();
+    let mut c = core.call.lock();
+    c.dismissed.retain(|d| is_active(d));
+    // Devices are opening and the card already changed. Leave it alone.
+    if c.starting {
+        return;
+    }
+    if let Some(a) = c.asking {
+        if !is_active(a) || running {
+            c.asking = None;
+            drop(c);
+            core.call_card("hidden", "");
+            return;
+        }
+    }
+    if running {
+        // Resume and Start meeting do not come from the call card. Tie them to the call
+        // that is up now, so hanging up still stops the notes.
+        if c.linked.is_none() {
+            if let Some(app) = active.first() {
+                log::log(format!("recording will stop when {} ends", app.name));
+                c.linked = Some(app.id);
+                c.gone_since = None;
+            } else {
+                return;
+            }
+        }
+        let Some(id) = c.linked else { return };
+        if is_active(id) {
+            c.gone_since = None;
+        } else if c.gone_since.get_or_insert_with(Instant::now).elapsed() > Duration::from_secs(12) {
+            drop(c);
+            let name = detect::by_id(id).map(|a| a.name).unwrap_or("call");
+            log::log(format!("call ended ({name}); stopping the meeting"));
+            stop_meeting(core);
+            core.call_card("ended", name);
+        }
+        return;
+    }
+    c.linked = None;
+    if c.asking.is_some() {
+        return;
+    }
+    let Some(app) = active.iter().find(|a| !c.dismissed.contains(&a.id)) else { return };
+    log::log(format!("call detected: {}", app.name));
+    if mode == "auto" {
+        c.linked = Some(app.id);
+        c.gone_since = None;
+        c.starting = true;
+        let name = app.name;
+        drop(c);
+        // Show the card before the mic opens, which takes a second or two.
+        core.call_card("recording", name);
+        match start_meeting(core) {
+            Ok(()) => { core.call.lock().starting = false; }
+            Err(e) => {
+                log::log(format!("couldn't start meeting: {e}"));
+                let mut c = core.call.lock();
+                c.starting = false;
+                c.linked = None;
+                drop(c);
+                core.call_card("hidden", "");
+            }
+        }
+    } else {
+        c.asking = Some(app.id);
+        core.call_card("detected", app.name);
+    }
+}
+
+/// "Start notes" on the call card. Async so opening the mic does not freeze the card.
+#[tauri::command(async)]
 fn call_start(core: CoreState, window: tauri::WebviewWindow) -> Result<(), String> {
     only(&window, "call")?;
     call_start_now(core.inner())
 }
 
 fn call_start_now(core: &Arc<Core>) -> Result<(), String> {
-    let app = core.call.lock().asking.take();
-    let name = app.and_then(detect::by_id).map(|a| a.name).unwrap_or("call");
-    start_meeting(core)?;
-    {
+    let app = {
         let mut c = core.call.lock();
+        let app = c.asking.take();
         c.linked = app;
         c.gone_since = None;
-    }
+        c.starting = true;
+        app
+    };
+    let name = app.and_then(detect::by_id).map(|a| a.name).unwrap_or("call");
+    // The card changes now. Opening the mic and every speaker happens after.
     core.call_card("recording", name);
+    if let Err(e) = start_meeting(core) {
+        let mut c = core.call.lock();
+        c.starting = false;
+        c.linked = None;
+        c.asking = app;
+        drop(c);
+        core.call_card("detected", name);
+        return Err(e);
+    }
+    core.call.lock().starting = false;
     Ok(())
 }
 

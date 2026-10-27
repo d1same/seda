@@ -247,7 +247,9 @@ export default function Meetings({ me }: { me: string }) {
 
   const start = async () => {
     setErr("");
-    try { await api.meetingStart(); setSt({ ...IDLE, running: true }); } catch (e) { setErr(String(e)); }
+    // Opening the mic takes a second or two. Show the live meeting on this click.
+    setSt({ ...IDLE, running: true });
+    try { await api.meetingStart(); } catch (e) { setSt(IDLE); setErr(String(e)); }
   };
   const stop = async () => {
     setBusy(true);
