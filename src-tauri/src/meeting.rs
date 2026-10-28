@@ -365,22 +365,33 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
     let mut guard = core.llm.lock();
     let llm = guard.as_mut().ok_or_else(|| anyhow::anyhow!("the writing AI isn't running"))?;
     let full = transcript_text(segs);
-    if parts.is_empty() && full.chars().count() <= SINGLE_PASS_CHARS {
-        return Ok((llm.meeting_single(&full, language, my_notes, &user, minutes, &vocab)?, Vec::new(), 0.0));
+    let people = crate::llm::meeting_people(&full, &user, &vocab);
+    if people.len() >= 4 {
+        log::log(format!("meeting notes: {} people ({})", people.len(), people.join(", ")));
     }
-    let mut a = from;
-    while a <= end {
-        let chunk = window(segs, a, a + WINDOW_SECS);
-        if !chunk.is_empty() {
-            log::log(format!("meeting notes: part {}", parts.len() + 1));
-            parts.push(llm.meeting_part(&transcript_text(&chunk), language, &user, &vocab)?);
+    // A short meeting has no part notes to reuse, so a later Resume starts again from the beginning.
+    let single = parts.is_empty() && full.chars().count() <= SINGLE_PASS_CHARS;
+    let mut notes = if single {
+        llm.meeting_single(&full, language, my_notes, &user, minutes, &vocab)?
+    } else {
+        let mut a = from;
+        while a <= end {
+            let chunk = window(segs, a, a + WINDOW_SECS);
+            if !chunk.is_empty() {
+                log::log(format!("meeting notes: part {}", parts.len() + 1));
+                parts.push(llm.meeting_part(&transcript_text(&chunk), language, &user, &vocab)?);
+            }
+            a += WINDOW_SECS;
         }
-        a += WINDOW_SECS;
+        log::log(format!("meeting notes: merging {} parts", parts.len()));
+        llm.meeting_merge(&parts, language, my_notes, &user, minutes, &vocab, &people)?
+    };
+    match llm.add_missing_people(&notes, &full, &people, &user) {
+        Ok(n) => notes = n,
+        Err(e) => log::log(format!("meeting notes: could not fill in missing people ({e})")),
     }
-    log::log(format!("meeting notes: merging {} parts", parts.len()));
-    let notes = llm.meeting_merge(&parts, language, my_notes, &user, minutes, &vocab)?;
     // Covered up to where the talk actually ended, so a resumed meeting's new words start a new stretch.
-    Ok((notes, parts, end))
+    Ok((notes, parts, if single { 0.0 } else { end }))
 }
 
 /// Test builds: the part notes a real meeting would have written while it was going (every full
