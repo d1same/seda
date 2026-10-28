@@ -96,25 +96,27 @@ pub fn rewrite_prompt(mode: &str) -> &'static str {
 /// Shared rules for all meeting notes (single pass, parts and merge): Granola-style notes, organised
 /// by topic, specific, and with only real follow-up work as tasks.
 const NOTE_RULES: &str = "Rules:
-- Organise by topic: one ## section per subject that was discussed, named after it (e.g. \"## Zoom audio setup\"), in the order it came up. Never use generic headings like \"Summary\" or \"Discussion\".
-- Be specific and concrete: what exactly happened, what was tried and what worked, error messages, settings, versions, names, numbers and dates. Never write vague lines like \"participants discussed issues\".
+- Organise by topic: one ## section per subject that was discussed, named after it (e.g. \"## Zoom audio setup\"), in the order it came up. A short side topic (a license, another product, a status update) still gets its own section. Never use generic headings like \"Summary\" or \"Discussion\".
+- Be specific: names, places, prices, speeds, counts, dates, settings, versions, and what was decided. A rough figure (\"about 9 dollars a user\") still counts — write it. Never turn a figure that was said into an open question, and never write vague lines like \"participants discussed issues\".
+- A person, company or number stays on the topic it was said about. Do not move it onto a different topic. If Sam renewed a license, do not write that Sam bought the printer.
 - Put supporting details as indented sub-bullets (two spaces, then \"- \") under their point.
-- Next steps are only follow-up work for AFTER the meeting. Every commitment counts, whoever made it: \"I'll …\", \"I can …\", \"we'll …\" and requests like \"Sam, can you …\" are all next steps (owner = the person who will do it). Never list things said during the call (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
-- Skip greetings and small talk. Never invent anything that was not said.
-- \"You\" in the transcript is the user; \"Them\" is the other people. The transcript comes from speech recognition, so some words are wrong: infer the meaning, never quote obvious mistakes.";
+- Next steps are only follow-up work for AFTER the meeting. Every commitment counts, whoever made it: \"I'll …\", \"I can …\", \"we'll …\" and requests like \"Sam, can you …\" are all next steps. Never list things said during the call (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
+- \"You\" is the user. \"Them\" is everyone else, often several people — never one person, and never an owner. Write the owner's name only when the transcript says that person will do it. If you cannot tell who, leave the name off. The wrong name is worse than no name.
+- Skip greetings and small talk. Never invent anything that was not said. The transcript comes from speech recognition, so some words are wrong: infer the meaning, never quote obvious mistakes, and never replace a garbled word with a different name from elsewhere in the call.
+- Open questions are only questions someone asked that nobody answered. If there are none, omit the section. Never write \"None\" or \"N/A\".";
 
-const MEETING: &str = "You are an excellent note-taker. Turn this meeting transcript (lines start with [mm:ss] and the speaker) into clear notes. Output Markdown only:
+const MEETING: &str = "You are an excellent note-taker. Turn this meeting transcript (lines start with [mm:ss] and the speaker) into clear notes. Output Markdown only, in THIS order (lists first, so nothing important is cut off):
 # <a specific title naming what the meeting was about, 4-9 words>
-## <topic>
-- <specific point>
-  - <supporting detail>
-(one ## section per topic, up to {N} topics)
 ## Decisions
 - <decision>   (only if decisions were made)
 ## Next steps
-- [ ] <who>: <follow-up task> (<when, if said>)   (only real follow-ups)
+- [ ] <name, only if the transcript says who>: <follow-up task> (<when, if said>)
 ## Open questions
 - <question left unanswered>   (only if any)
+## <topic>
+- <specific point>
+  - <supporting detail>
+(one ## section per topic; a short side topic still gets its own section)
 List EVERY decision, follow-up task and open question that was mentioned; missing one is worse than including a minor one.
 {RULES}";
 
@@ -122,13 +124,13 @@ const MEETING_PART: &str = "You take detailed notes on one part (about 10 minute
 ## Decisions
 - <decision>
 ## Next steps
-- [ ] <who>: <follow-up task> (<when>)
+- [ ] <name, only if the transcript says who>: <follow-up task> (<when>)
 ## Open questions
 - <question>
 ## <topic>
 - <specific point>
   - <supporting detail>
-(one ## section per topic discussed in this part)
+(one ## section per topic discussed in this part, including a short side topic)
 Leave out empty sections. Capture EVERY decision, follow-up task and open question in this part.
 {RULES}";
 const MEETING_MERGE: &str = "You get the notes of consecutive parts of one meeting, in order. Combine their topic sections into the final notes. Output Markdown only:
@@ -136,32 +138,95 @@ const MEETING_MERGE: &str = "You get the notes of consecutive parts of one meeti
 ## <topic>
 - <specific point>
   - <supporting detail>
-Merge sections about the same subject from different parts into ONE section, keeping all their specific details. At most {N} topic sections: fold small related points together. Write ONLY the title and topic sections: do NOT write Decisions, Next steps or Open questions sections (they are added separately).
+Merge sections about the same subject from different parts into ONE section, keeping all their specific details (names, numbers, places). A short side topic stays its own section; do not drop a subject to keep the notes short. Write ONLY the title and topic sections: do NOT write Decisions, Next steps or Open questions sections (they are added separately).
 {RULES}";
-/// The model sometimes writes "## Open questions" followed by just "None". Remove such sections.
-pub fn drop_empty_sections(md: &str) -> String {
-    let empty = |l: &str| {
-        let l = l.trim().trim_start_matches(['-', '*', ' ']).trim().trim_end_matches('.').to_lowercase();
-        l.is_empty() || (l.starts_with('(') && l.ends_with(')')) || ["none", "n/a", "nothing", "ندارد", "هیچ", "هیچ‌کدام", "-"].contains(&l.as_str())
+
+/// A bullet that carries no information ("None", "N/A", "(Them)").
+fn is_blank_item(line: &str) -> bool {
+    let l = line.trim().trim_start_matches(['-', '*', ' ']).trim().trim_end_matches(['.', ':']).to_lowercase();
+    l.is_empty() || (l.starts_with('(') && l.ends_with(')')) || ["none", "n/a", "na", "nothing", "ندارد", "هیچ", "هیچ‌کدام", "-"].contains(&l.as_str())
+}
+
+/// The model labels every remote person "Them". Drop that fake owner; keep a real name.
+fn clean_line(line: &str) -> String {
+    let s = line.trim_end();
+    let lower = s.to_ascii_lowercase();
+    let s = if let Some(head) = lower.strip_suffix("(them)") {
+        if head.ends_with(' ') || head.ends_with(':') {
+            s[..head.len()].trim_end().trim_end_matches(':').trim_end()
+        } else {
+            s
+        }
+    } else {
+        s
     };
+    let Some(body) = s.trim_start().strip_prefix("- ").or_else(|| s.trim_start().strip_prefix("* ")) else {
+        return s.to_string();
+    };
+    let indent_len = s.len() - s.trim_start().len();
+    let indent = &s[..indent_len];
+    let body = body.trim_start();
+    let (mark, rest) = if let Some(r) = body.strip_prefix("[ ]") {
+        ("[ ] ", r.trim_start())
+    } else if let Some(r) = body.strip_prefix("[x]") {
+        ("[x] ", r.trim_start())
+    } else if let Some(r) = body.strip_prefix("[X]") {
+        ("[x] ", r.trim_start())
+    } else {
+        ("", body)
+    };
+    if rest.len() >= 5 && rest.as_bytes()[..4].eq_ignore_ascii_case(b"them") && rest.as_bytes()[4] == b':' {
+        return format!("{indent}- {mark}{}", rest[5..].trim_start());
+    }
+    s.to_string()
+}
+
+/// The model sometimes writes "## Open questions" followed by just "None", or a real
+/// bullet plus a leftover "None". Remove empty sections and those placeholder lines.
+pub fn drop_empty_sections(md: &str) -> String {
+    let owned: Vec<String> = md.lines().map(clean_line).collect();
+    let lines: Vec<&str> = owned.iter().map(String::as_str).collect();
     let mut out: Vec<&str> = Vec::new();
-    let lines: Vec<&str> = md.lines().collect();
     let mut i = 0;
     while i < lines.len() {
         if lines[i].starts_with("## ") {
             let mut j = i + 1;
-            while j < lines.len() && !lines[j].starts_with("#") {
+            while j < lines.len() && !lines[j].starts_with('#') {
                 j += 1;
             }
-            if lines[i + 1..j].iter().all(|l| empty(l)) {
+            let kept: Vec<&str> = lines[i + 1..j].iter().copied().filter(|l| l.trim().is_empty() || !is_blank_item(l)).collect();
+            if kept.iter().all(|l| l.trim().is_empty()) {
                 i = j;
                 continue;
             }
+            out.push(lines[i]);
+            out.extend(kept);
+            i = j;
+            continue;
         }
         out.push(lines[i]);
         i += 1;
     }
     out.join("\n")
+}
+
+/// Lists first in the model output (so a token limit can't cut them off), then moved back
+/// under the topics for the reader. Decisions, next steps and open questions are copied
+/// out by code, same as a long meeting's merge.
+fn lists_last(md: &str) -> String {
+    let topics = strip_sections(md, &LIST_SECTIONS);
+    let mut notes = topics;
+    let parts = [md.to_string()];
+    for (heading, aliases) in [("Decisions", &["decisions"][..]), ("Next steps", &["next steps", "action items"][..]), ("Open questions", &["open questions"][..])] {
+        let items = collect_items(&parts, aliases);
+        if !items.is_empty() {
+            if !notes.is_empty() && !notes.ends_with('\n') {
+                notes.push('\n');
+            }
+            notes.push_str(&format!("\n## {heading}\n{}\n", items.join("\n")));
+        }
+    }
+    drop_empty_sections(notes.trim())
 }
 
 const ASK: &str = "You are Seda's meeting assistant. Below are the notes and the transcript of one meeting (\"You\" is the user, \"Them\" the other people; the transcript comes from speech recognition and has some wrong words).
@@ -342,44 +407,45 @@ impl Llm {
     }
 
     /// Shared instructions for meeting notes: language, who "You" is, the user's own notes.
-    fn meeting_extra(language: Option<&str>, user: &str, has_mine: bool) -> String {
+    fn meeting_extra(language: Option<&str>, user: &str, has_mine: bool, vocab: &[String]) -> String {
         let mut s = language.map(|l| format!("\n\nWrite the notes in {l}. Keep names and technical terms as they were said.")).unwrap_or_default();
         s.push_str(&who_is_you(user));
+        if !vocab.is_empty() {
+            let terms = vocab.iter().take(40).map(String::as_str).collect::<Vec<_>>().join(", ");
+            s.push_str(&format!("\n\nSpell these names and terms exactly like this when they were said: {terms}."));
+        }
         if has_mine {
             s.push_str("\n\nThe user also typed their own notes during the meeting (given first). Build on them: keep every point they wrote, in their words, and add the details from the meeting.");
         }
         s
     }
 
-    /// How many topic sections fit the meeting: about one per 5 minutes, 3 to 10.
-    fn summary_bullets(minutes: u32) -> String {
-        (minutes / 5).clamp(3, 10).to_string()
-    }
-
     /// Notes for a short meeting in one pass.
-    pub fn meeting_single(&mut self, transcript: &str, language: Option<&str>, my_notes: &str, user: &str, minutes: u32) -> Result<String> {
+    pub fn meeting_single(&mut self, transcript: &str, language: Option<&str>, my_notes: &str, user: &str, _minutes: u32, vocab: &[String]) -> Result<String> {
         let mine = my_notes.trim();
-        let system = format!("{}{}", MEETING.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, !mine.is_empty()));
+        let system = format!("{}{}", MEETING.replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, !mine.is_empty(), vocab));
         let body = if mine.is_empty() { transcript.to_string() } else { format!("My own notes:\n{mine}\n\n---\n\n{transcript}") };
-        Ok(drop_empty_sections(&self.chat_with(&system, &body, 1800, Duration::from_secs(600))?))
+        // Lists are written first, then moved under the topics. 2400 tokens so a side topic
+        // (a license, a price) is not cut off the end.
+        Ok(lists_last(&self.chat_with(&system, &body, 2400, Duration::from_secs(600))?))
     }
 
     /// Detailed notes for one ~10-minute stretch of a long meeting (written while it is still going).
-    pub fn meeting_part(&mut self, transcript: &str, language: Option<&str>, user: &str) -> Result<String> {
-        let system = format!("{}{}", MEETING_PART.replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, false));
-        self.chat_with(&system, transcript, 1200, Duration::from_secs(600))
+    pub fn meeting_part(&mut self, transcript: &str, language: Option<&str>, user: &str, vocab: &[String]) -> Result<String> {
+        let system = format!("{}{}", MEETING_PART.replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, false, vocab));
+        self.chat_with(&system, transcript, 1600, Duration::from_secs(600))
     }
 
     /// Final notes from the part notes of a long meeting. The AI only writes the title and topics;
     /// decisions, next steps and open questions are collected from the parts by code, so the merge
     /// can never drop one (a small model rewriting everything at once loses items).
-    pub fn meeting_merge(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, minutes: u32) -> Result<String> {
+    pub fn meeting_merge(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, _minutes: u32, vocab: &[String]) -> Result<String> {
         let mine = my_notes.trim();
-        let system = format!("{}{}", MEETING_MERGE.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, !mine.is_empty()));
+        let system = format!("{}{}", MEETING_MERGE.replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, !mine.is_empty(), vocab));
         let topics_only: Vec<String> = parts.iter().map(|p| strip_sections(p, &LIST_SECTIONS)).collect();
         let joined = topics_only.iter().enumerate().map(|(i, p)| format!("### Part {}\n{p}", i + 1)).collect::<Vec<_>>().join("\n\n");
         let body = if mine.is_empty() { joined } else { format!("My own notes:\n{mine}\n\n---\n\n{joined}") };
-        let mut notes = strip_sections(&self.chat_with(&system, &body, 1500, Duration::from_secs(600))?, &LIST_SECTIONS);
+        let mut notes = strip_sections(&self.chat_with(&system, &body, 2200, Duration::from_secs(600))?, &LIST_SECTIONS);
         for (heading, aliases) in [("Decisions", &["decisions"][..]), ("Next steps", &["next steps", "action items"][..]), ("Open questions", &["open questions"][..])] {
             let items = collect_items(parts, aliases);
             if !items.is_empty() {
@@ -424,10 +490,70 @@ fn collect_items(parts: &[String], names: &[&str]) -> Vec<String> {
                 inside = heading_is(line, names);
                 continue;
             }
-            let l = line.trim_end();
-            if inside && (l.trim_start().starts_with("- ") || l.trim_start().starts_with("* ")) && seen.insert(norm(l)) {
-                items.push(l.to_string());
+            let l = clean_line(line.trim_end());
+            if inside && (l.trim_start().starts_with("- ") || l.trim_start().starts_with("* ")) && !is_blank_item(&l) && seen.insert(norm(&l)) {
+                items.push(l);
             }
         }
     }
-    items}
+    items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drops_placeholder_lines_and_fake_them_owner() {
+        let md = "\
+# Switzerland office network
+## Open questions
+- What is the exact price for the services?
+- None
+
+## Next steps
+- **Share the wireless options** (Them)
+- [ ] Them: send the admin email
+- [ ] Jose: assign the private VLAN
+";
+        let got = drop_empty_sections(md);
+        assert!(got.contains("What is the exact price"));
+        assert!(!got.to_lowercase().contains("none"));
+        assert!(!got.contains("(Them)"));
+        assert!(!got.contains("Them:"));
+        assert!(got.contains("send the admin email"));
+        assert!(got.contains("Jose: assign the private VLAN"));
+    }
+
+    #[test]
+    fn drops_a_section_that_is_only_none() {
+        let md = "## Decisions\n- None\n\n## Printer\n- Luke buys it locally\n";
+        let got = drop_empty_sections(md);
+        assert!(!got.contains("Decisions"));
+        assert!(got.contains("Luke buys it locally"));
+    }
+
+    #[test]
+    fn moves_lists_under_the_topics() {
+        let md = "\
+# Office network
+## Decisions
+- Use the shared speed
+## Next steps
+- [ ] Moe: send Luke a printer model
+## Open questions
+- None
+## Bandwidth
+- 130 Mbps is still free on the 500 Mbps circuit
+";
+        let got = lists_last(md);
+        let bandwidth = got.find("## Bandwidth").unwrap();
+        let decisions = got.find("## Decisions").unwrap();
+        let steps = got.find("## Next steps").unwrap();
+        assert!(bandwidth < decisions);
+        assert!(decisions < steps);
+        assert!(got.contains("Moe: send Luke a printer model"));
+        assert!(!got.to_lowercase().contains("none"));
+        assert!(!got.contains("Open questions"));
+    }
+}

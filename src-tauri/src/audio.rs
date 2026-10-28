@@ -243,6 +243,31 @@ pub fn rms(samples: &[f32]) -> f32 {
     (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt()
 }
 
+/// True when some half-second is louder than background noise.
+/// Averaging a whole 25 s chunk hides a short quiet sentence (a price, a name) inside silence.
+pub fn audible(samples: &[f32]) -> bool {
+    const WIN: usize = (RATE as usize) / 2;
+    const FLOOR: f32 = 0.003;
+    if samples.is_empty() {
+        return false;
+    }
+    if samples.len() <= WIN {
+        return rms(samples) > FLOOR;
+    }
+    let mut i = 0;
+    while i < samples.len() {
+        let end = (i + WIN).min(samples.len());
+        if end - i >= WIN / 2 && rms(&samples[i..end]) > FLOOR {
+            return true;
+        }
+        if end == samples.len() {
+            break;
+        }
+        i += WIN / 2;
+    }
+    false
+}
+
 pub fn save_wav(path: &std::path::Path, samples: &[f32]) -> Result<()> {
     let spec = hound::WavSpec { channels: 1, sample_rate: RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
     let mut w = hound::WavWriter::create(path, spec)?;
@@ -251,4 +276,29 @@ pub fn save_wav(path: &std::path::Path, samples: &[f32]) -> Result<()> {
     }
     w.finalize()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_short_sentence_in_a_long_silence_is_audible() {
+        // 25 s of silence with 0.3 s of quiet speech in the middle.
+        // The old whole-chunk average sits under 0.002 and used to skip the sentence.
+        let mut samples = vec![0.0f32; RATE as usize * 25];
+        let at = RATE as usize * 12;
+        for s in &mut samples[at..at + RATE as usize * 3 / 10] {
+            *s = 0.01;
+        }
+        assert!(rms(&samples) < 0.002, "fixture must be a case the old gate dropped");
+        assert!(audible(&samples));
+    }
+
+    #[test]
+    fn room_noise_is_not_audible() {
+        let samples = vec![0.001f32; RATE as usize * 25];
+        assert!(!audible(&samples));
+        assert!(!audible(&[]));
+    }
 }

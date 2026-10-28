@@ -98,6 +98,18 @@ impl Asr {
     /// unsure, also as English and keep the more confident one. (Decoding pure English speech as,
     /// say, Farsi gives phonetic nonsense.)
     pub fn transcribe(&self, audio: &[f32], language: &str, vocab: &[String]) -> Result<String> {
+        self.transcribe_floor(audio, language, vocab, KEEP_ABOVE, false)
+    }
+
+    /// Meeting audio. The other people (`remote`) come through the call, which is quieter and more
+    /// compressed than a close mic, so Whisper's confidence sits lower on real speech. The mic
+    /// threshold drops those chunks and the notes then miss prices, names and side topics.
+    pub fn transcribe_meeting(&self, audio: &[f32], language: &str, vocab: &[String], remote: bool) -> Result<String> {
+        let floor = if remote { 0.35 } else { KEEP_ABOVE };
+        self.transcribe_floor(audio, language, vocab, floor, remote)
+    }
+
+    fn transcribe_floor(&self, audio: &[f32], language: &str, vocab: &[String], min_conf: f32, remote: bool) -> Result<String> {
         let Some(trimmed) = self.speech_only(audio) else { return Ok(String::new()) };
         let audio = &trimmed[..];
         let best = if language == "en" || language == "auto" {
@@ -117,9 +129,12 @@ impl Asr {
         }
         // Background noise makes Whisper invent short phrases ("I don't know.", "Thank you.").
         // Drop results Whisper itself flags as non-speech, or that it is unsure of in every language.
-        if best.no_speech > NO_SPEECH_ABOVE || best.conf < KEEP_ABOVE {
+        if best.no_speech > NO_SPEECH_ABOVE || best.conf < min_conf {
             crate::log::log(format!("dropped as noise: conf {:.2}, no_speech {:.2}", best.conf, best.no_speech));
             return Ok(String::new());
+        }
+        if remote && best.conf < KEEP_ABOVE {
+            crate::log::log(format!("kept quiet call audio: conf {:.2}", best.conf));
         }
         Ok(best.text)
     }

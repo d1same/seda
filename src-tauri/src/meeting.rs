@@ -60,11 +60,35 @@ pub struct LiveNotes {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
-/// The transcript lines of one stretch of the meeting, without echoes, in time order.
+/// The transcript lines of one stretch of the meeting, without echoes or duplicate copies, in time order.
 fn window(segs: &[Segment], from: f32, to: f32) -> Vec<Segment> {
-    let mut w: Vec<Segment> = segs.iter().filter(|s| s.start >= from && s.start < to && (s.who != "You" || !is_echo(s, segs))).cloned().collect();
-    w.sort_by(|a, b| a.start.total_cmp(&b.start));
-    w
+    let slice: Vec<Segment> = segs.iter().filter(|s| s.start >= from && s.start < to).cloned().collect();
+    // Echo is checked against the whole meeting, so a "Them" line just outside this stretch still counts.
+    clean_segments(slice, segs)
+}
+
+/// Drop duplicate "Them" lines (the same call heard on two outputs) and "You" lines that are
+/// just the mic hearing them. `echo_against` is the transcript those "You" lines are compared to.
+fn clean_segments(segs: Vec<Segment>, echo_against: &[Segment]) -> Vec<Segment> {
+    let mut unique = Vec::new();
+    let mut ordered = segs;
+    ordered.sort_by(|a, b| a.start.total_cmp(&b.start));
+    for s in ordered {
+        if s.who == "Them" && is_duplicate_them(&s, &unique) {
+            continue;
+        }
+        unique.push(s);
+    }
+    let mut them: Vec<Segment> = echo_against.iter().filter(|s| s.who == "Them").cloned().collect();
+    them.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let mut them_once = Vec::new();
+    for s in them {
+        if !is_duplicate_them(&s, &them_once) {
+            them_once.push(s);
+        }
+    }
+    unique.retain(|s| s.who != "You" || !is_echo(s, &them_once));
+    unique
 }
 
 /// Longest piece transcribed at once when nobody pauses (Whisper works on up to 30 s).
@@ -120,8 +144,8 @@ impl Track {
             let chunk: Vec<f32> = self.pending.drain(..cut).collect();
             let start = self.pending_start;
             self.pending_start += cut as f32 / rate;
-            if audio::rms(&chunk) > 0.002 {
-                let text = core.asr.read().as_ref().map(|a| a.transcribe(&chunk, language, vocab));
+            if audio::audible(&chunk) {
+                let text = core.asr.read().as_ref().map(|a| a.transcribe_meeting(&chunk, language, vocab, self.who == "Them"));
                 if let Some(Ok(text)) = text {
                     if !text.trim().is_empty() {
                         // Corrections you taught Seda while dictating apply here too.
@@ -144,9 +168,14 @@ impl Track {
     }
 }
 
+fn word_set(t: &str) -> std::collections::HashSet<String> {
+    t.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()).filter(|w| !w.is_empty()).collect()
+}
+
 /// Without headphones the mic also hears the other people, and Whisper turns that echo into
-/// garbled "You" lines. Drop a "You" line when it repeats what "Them" said, or when they were
-/// talking for most of it (people rarely talk over each other for long).
+/// garbled "You" lines. Drop a "You" line when they were talking for most of it, or when it is
+/// the same utterance a few seconds late. A recap after they finish ("I'll send Luke the model")
+/// adds new words, so it stays — that recap is often the clearest action item.
 fn is_echo(seg: &Segment, others: &[Segment]) -> bool {
     let them = || others.iter().filter(|o| o.who == "Them");
     let len = (seg.end - seg.start).max(0.1);
@@ -154,10 +183,36 @@ fn is_echo(seg: &Segment, others: &[Segment]) -> bool {
     if overlap / len >= 0.6 {
         return true;
     }
-    let words = |t: &str| t.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()).filter(|w| !w.is_empty()).collect::<std::collections::HashSet<_>>();
-    let mine = words(&seg.text);
-    !mine.is_empty()
-        && them().filter(|o| (o.start - seg.start).abs() < 15.0).any(|o| mine.intersection(&words(&o.text)).count() * 2 >= mine.len())
+    let mine = word_set(&seg.text);
+    if mine.is_empty() {
+        return false;
+    }
+    them().filter(|o| (o.start - seg.start).abs() < 4.0).any(|o| {
+        let theirs = word_set(&o.text);
+        let shared = mine.intersection(&theirs).count();
+        // At least 70% of the user's words are theirs, and under 20% are new: same sentence, not a recap.
+        shared * 10 >= mine.len() * 7 && mine.difference(&theirs).count() * 5 < mine.len()
+    })
+}
+
+/// The call can be heard on more than one output (speakers and a headset). Those copies are the
+/// same sentences; keeping both makes the notes glue a name from one copy onto the other.
+fn is_duplicate_them(seg: &Segment, existing: &[Segment]) -> bool {
+    if seg.who != "Them" {
+        return false;
+    }
+    let mine = word_set(&seg.text);
+    if mine.is_empty() {
+        return false;
+    }
+    existing.iter().filter(|o| o.who == "Them" && (o.start - seg.start).abs() < 8.0).any(|o| {
+        let theirs = word_set(&o.text);
+        if theirs.is_empty() {
+            return false;
+        }
+        let shared = mine.intersection(&theirs).count();
+        shared * 4 >= mine.len() * 3 && shared * 4 >= theirs.len() * 3
+    })
 }
 impl Meeting {
     pub fn start(core: Arc<Core>, resume: Option<Resume>) -> anyhow::Result<Self> {
@@ -199,6 +254,9 @@ impl Meeting {
             let add = |new: Vec<Segment>, core: &Core| {
                 let mut all = segs.lock();
                 for s in new {
+                    if s.who == "Them" && is_duplicate_them(&s, &all) {
+                        continue;
+                    }
                     if s.who == "You" && is_echo(&s, &all) {
                         continue;
                     }
@@ -248,7 +306,8 @@ impl Meeting {
                     if !chunk.is_empty() {
                         let t = Instant::now();
                         let user = core_notes.settings.read().user_name.clone();
-                        let note = core_notes.llm.lock().as_mut().map(|l| l.meeting_part(&transcript_text(&chunk), main_language(&chunk), &user));
+                        let vocab = core_notes.vocab();
+                        let note = core_notes.llm.lock().as_mut().map(|l| l.meeting_part(&transcript_text(&chunk), main_language(&chunk), &user, &vocab));
                         match note {
                             Some(Ok(n)) => {
                                 log::log(format!("meeting notes: part {} written during the meeting in {:.0}s", parts.lock().len() + 1, t.elapsed().as_secs_f32()));
@@ -274,10 +333,10 @@ impl Meeting {
         self.running.store(false, Ordering::SeqCst);
         let _ = self.worker.join();
         // A resumed meeting: the earlier transcript plus what was said now.
+        // Live, a "You" line can arrive before the "Them" line it echoes, and the same call can
+        // land twice (speakers and a headset). Check again with everything.
         let segs: Vec<Segment> = self.prev.iter().cloned().chain(self.segments.lock().iter().cloned()).collect();
-        // Live, a "You" line can arrive before the "Them" line it echoes: check again with everything.
-        let mut kept: Vec<Segment> = segs.iter().filter(|s| s.who != "You" || !is_echo(s, &segs)).cloned().collect();
-        kept.sort_by(|a, b| a.start.total_cmp(&b.start));
+        let kept = clean_segments(segs.clone(), &segs);
         (kept, self.live)
     }
 }
@@ -299,6 +358,7 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
         None => (Vec::new(), 0.0),
     };
     let user = core.settings.read().user_name.clone();
+    let vocab = core.vocab();
     let language = main_language(segs);
     let end = segs.iter().map(|s| s.end.max(s.start)).fold(0.0f32, f32::max);
     let minutes = (end / 60.0).round() as u32;
@@ -306,19 +366,19 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
     let llm = guard.as_mut().ok_or_else(|| anyhow::anyhow!("the writing AI isn't running"))?;
     let full = transcript_text(segs);
     if parts.is_empty() && full.chars().count() <= SINGLE_PASS_CHARS {
-        return Ok((llm.meeting_single(&full, language, my_notes, &user, minutes)?, Vec::new(), 0.0));
+        return Ok((llm.meeting_single(&full, language, my_notes, &user, minutes, &vocab)?, Vec::new(), 0.0));
     }
     let mut a = from;
     while a <= end {
         let chunk = window(segs, a, a + WINDOW_SECS);
         if !chunk.is_empty() {
             log::log(format!("meeting notes: part {}", parts.len() + 1));
-            parts.push(llm.meeting_part(&transcript_text(&chunk), language, &user)?);
+            parts.push(llm.meeting_part(&transcript_text(&chunk), language, &user, &vocab)?);
         }
         a += WINDOW_SECS;
     }
     log::log(format!("meeting notes: merging {} parts", parts.len()));
-    let notes = llm.meeting_merge(&parts, language, my_notes, &user, minutes)?;
+    let notes = llm.meeting_merge(&parts, language, my_notes, &user, minutes, &vocab)?;
     // Covered up to where the talk actually ended, so a resumed meeting's new words start a new stretch.
     Ok((notes, parts, end))
 }
@@ -331,7 +391,8 @@ pub fn simulate_live(core: &Core, segs: &[Segment]) -> LiveNotes {
     let (mut parts, mut from) = (Vec::new(), 0.0f32);
     while from + WINDOW_SECS + 60.0 <= end {
         let chunk = window(segs, from, from + WINDOW_SECS);
-        if let Some(Ok(n)) = core.llm.lock().as_mut().map(|l| l.meeting_part(&transcript_text(&chunk), main_language(&chunk), "")) {
+        let vocab = core.vocab();
+        if let Some(Ok(n)) = core.llm.lock().as_mut().map(|l| l.meeting_part(&transcript_text(&chunk), main_language(&chunk), "", &vocab)) {
             parts.push(n);
         }
         from += WINDOW_SECS;
@@ -391,4 +452,42 @@ pub fn ask_context(title: &str, notes: &str, segs: &[Segment], question: &str) -
         keep.into_iter().map(|(_, c)| c).collect::<Vec<_>>().join("\n…\n")
     };
     format!("# Meeting notes: {title}\n{notes}\n\n# Transcript\n{picked}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(who: &str, start: f32, end: f32, text: &str) -> Segment {
+        Segment { who: who.into(), start, end, text: text.into() }
+    }
+
+    #[test]
+    fn keeps_a_recap_the_old_echo_rule_would_drop() {
+        // Said 12 s later, sharing most of the words. That is the user restating the task, not the mic hearing them.
+        let them = seg("Them", 0.0, 4.0, "send the model to Luke after the call");
+        let you = seg("You", 12.0, 16.0, "so I'll send Luke the model");
+        let kept = clean_segments(vec![them.clone(), you.clone()], &[them, you]);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[1].who, "You");
+    }
+
+    #[test]
+    fn drops_the_same_sentence_a_few_seconds_late() {
+        let them = seg("Them", 2.0, 5.0, "the private vlan is ready");
+        let you = seg("You", 3.0, 6.0, "the private vlan is ready");
+        let kept = clean_segments(vec![you, them.clone()], &[them]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].who, "Them");
+    }
+
+    #[test]
+    fn drops_a_second_copy_of_the_same_call_audio() {
+        let a = seg("Them", 1.0, 4.0, "Jose will assign a private vlan and send a quote");
+        let b = seg("Them", 1.4, 4.4, "Jose will assign a private vlan and send a quote");
+        let other = seg("Them", 20.0, 24.0, "guests can use the shared wifi");
+        let kept = clean_segments(vec![a, b, other], &[]);
+        assert_eq!(kept.len(), 2);
+        assert!(kept[1].text.contains("wifi"));
+    }
 }
