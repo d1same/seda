@@ -59,7 +59,7 @@ export type HistoryItem = {
 
 export type Fix = { wrong: string; right: string; hits: number };
 
-export type Segment = { who: string; start: number; text: string };
+export type Segment = { who: string; start: number; end?: number; text: string };
 /** In the list, transcript and notes are empty. Title is empty while the notes are being written. `search` also matches what was said and the Outlook appointment. */
 export type Meeting = { id: number; ts: string; secs: number; title: string; transcript: string; notes: string; my_notes: string; chat: string; people?: string; cal?: string; search?: string };
 export type ChatTurn = { role: "you" | "ai"; text: string; edited?: boolean };
@@ -123,6 +123,7 @@ export const api = {
   meetingDelete: (id: number) => invoke<void>("meeting_delete", { id }),
   meetingRenotes: (id: number) => invoke<void>("meeting_renotes", { id }),
   meetingSetMyNotes: (text: string) => invoke<void>("meeting_set_my_notes", { text }),
+  meetingUpdateMyNotes: (id: number, text: string) => invoke<void>("meeting_update_my_notes", { id, text }),
   meetingSaveNotes: (id: number, title: string, notes: string) => invoke<void>("meeting_save_notes", { id, title, notes }),
   meetingAsk: (id: number, question: string) => invoke<ChatTurn[]>("meeting_ask", { id, question }),
   meetingClearChat: (id: number) => invoke<void>("meeting_clear_chat", { id }),

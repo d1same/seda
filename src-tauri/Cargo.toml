@@ -39,6 +39,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 hound = "3.5"
 dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
+# Echo cancellation for meetings on speakers (pure-Rust port of WebRTC AEC3, no C++).
+sonora = "0.3"
+# Caret moves by grapheme cluster (ZWNJ, CRLF), not by char.
+unicode-segmentation = "1"
 
 [dependencies.windows]
 version = "0.61"

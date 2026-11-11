@@ -112,16 +112,30 @@ fn set_private(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::E
 
 const VK_LEFT: u16 = 0x25;
 
-/// Select the `n` characters before the caret, then paste `new` over them.
+/// Select the draft just before the caret, then paste `new` over it.
 /// The caret has to still be at the end of the draft this just typed.
 pub fn replace_tail(old: &str, new: &str) -> anyhow::Result<()> {
+    use unicode_segmentation::UnicodeSegmentation;
     if foreground_is_elevated() {
         copy_private(new)?;
         anyhow::bail!("This window runs as administrator, so Windows blocks typing into it. The text is on your clipboard — press Ctrl+V.");
     }
-    let n = old.chars().count();
+    // One Left press moves over one grapheme cluster, not one char: a ZWNJ (inside Persian words
+    // like «می‌کنم») joins the letter before it, and CRLF is one step. Counting chars would select
+    // past the draft and overwrite the user's own text.
+    let n = old.graphemes(true).count();
     if n == 0 || n > 1500 {
         anyhow::bail!("nothing to replace");
+    }
+    // Check the draft is really what sits before the caret (the user may have clicked or typed
+    // since). Apps without a text pattern return nothing; those are trusted as before.
+    let before = text_before_caret(old.chars().count() + 8);
+    let norm = |t: &str| t.replace('\r', "").trim_end().to_string();
+    // A long draft is read back only partly (the reader stops at 800 characters): compare what fits.
+    let (before, old) = (norm(&before), norm(old));
+    let tail: String = old.chars().skip(old.chars().count().saturating_sub(before.chars().count())).collect();
+    if !before.is_empty() && !before.ends_with(&tail) {
+        anyhow::bail!("the draft is no longer just before the cursor; leaving the first paste");
     }
     select_back(n);
     std::thread::sleep(Duration::from_millis(40));

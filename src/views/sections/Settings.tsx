@@ -110,7 +110,7 @@ export default function Settings({ settings, update, status, go }: { settings: S
     <>
       <Head n="Settings" title="Settings" />
 
-      <div className="group-label label">Dictation</div>
+      <div className="group-label">Dictation</div>
 
       <Row title="Dictation shortcut" help="Any mouse button or key. Mouse 4 is the side “back” button.">
         <ShortcutPicker which="dictate" settings={settings} update={update} big />
@@ -149,7 +149,7 @@ export default function Settings({ settings, update, status, go }: { settings: S
           }}
         />
       </Row>
-      <div className="group-label label">Meetings</div>
+      <div className="group-label">Meetings</div>
       <Row title="When a call starts" help={DETECT_HELP[settings.meeting_detect]}>
         <Segmented
           value={settings.meeting_detect}
@@ -163,45 +163,44 @@ export default function Settings({ settings, update, status, go }: { settings: S
         </Row>
       )}
 
-      <ToggleRow
-        title="Keep meeting recordings"
-        help="Off: like Granola, the audio is transcribed as you talk and never saved; only the transcript and notes stay. On: also saves the audio on this PC."
-        on={settings.keep_meeting_audio}
-        onChange={(v) => update("keep_meeting_audio", v)}
-      />
-
-      <div className="group-label label">General</div>
+      <div className="group-label">General</div>
       <Row title="Your name" help="Seda greets you, labels you in transcripts, and knows “Alex, can you…” in a meeting is a task for you.">
         <NameField settings={settings} update={update} />
       </Row>
-      <Row title="Your email" help={'Say "my email" and Seda pastes this address.'}>
-        <EmailField settings={settings} update={update} />
-      </Row>
-      <Row title="Spoken snippets" help="Say the phrase, and Seda pastes the saved text." top>
-        <SnippetEditor settings={settings} update={update} />
-      </Row>
-      <Row title="When not recording" help="Circle: click it to start dictation, click again to stop, drag it anywhere.">
+      <Row title="Idle indicator" help="Hidden by default. The circle starts dictation on click and can be dragged anywhere.">
         <Segmented value={settings.idle_dot ? "dot" : "none"} options={[["none", "Nothing"], ["dot", "Circle"]]} onChange={(v) => update("idle_dot", v === "dot")} />
       </Row>
       <Row title="Fix selected text" help="Select text anywhere and press this to correct or rewrite it.">
         <ShortcutPicker which="fix" settings={settings} update={update} />
       </Row>
       <ToggleRow title="Sounds" on={settings.sounds} onChange={(v) => update("sounds", v)} />
-      <VersionRow />
       <ToggleRow title="Start with Windows" help="Opens quietly in the tray so your shortcut always works." on={settings.autostart} onChange={(v) => update("autostart", v)} />
+      <VersionRow />
 
       <button className="advanced-toggle" onClick={() => setAdvanced(!advanced)} aria-expanded={advanced}>
-        <span className="label">Advanced</span>
+        <span className="kicker">Advanced</span>
         <span className="faint">{advanced ? "Hide" : "Show"}</span>
       </button>
 
       {advanced && (
         <div className="advanced">
+          <ToggleRow
+            title="Keep meeting recordings"
+            help="Off: like Granola, the audio is transcribed as you talk and never saved; only the transcript and notes stay. On: also saves the audio on this PC."
+            on={settings.keep_meeting_audio}
+            onChange={(v) => update("keep_meeting_audio", v)}
+          />
+          <Row title="Your email" help={'Say "my email" and Seda pastes this address.'}>
+            <EmailField settings={settings} update={update} />
+          </Row>
+          <Row title="Spoken snippets" help="Say the phrase, and Seda pastes the saved text." top>
+            <SnippetEditor settings={settings} update={update} />
+          </Row>
           <ToggleRow title="Match the app" help="Email layout in Outlook/Gmail, bullets in Jira, casual in Teams/Slack." on={settings.app_styles} onChange={(v) => update("app_styles", v)} />
           <ToggleRow title="English words in English letters" help="Keeps words like “deploy” in English letters instead of your language's script." on={settings.latin_tech_terms} onChange={(v) => update("latin_tech_terms", v)} />
-          <div className="group-label label">Voice training</div>
+          <div className="group-label">Voice training</div>
           <Training settings={settings} update={update} go={go} embedded />
-          <div className="group-label label">Engine</div>
+          <div className="group-label">Engine</div>
           <Engine settings={settings} update={update} status={status} embedded />
           <Row title="Setup" help="Download models again, switch package, or re-test your microphone.">
             <button className="btn" onClick={() => update("onboarded", false)}>Run setup again</button>

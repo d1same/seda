@@ -89,8 +89,8 @@ export default function Main() {
             </button>
           ))}
         </nav>
-        <UpdateBanner />
         <div className="rail-foot">
+          <UpdateBanner />
           <button className="status-line" onClick={() => setSection(lamp === "err" ? "settings" : "home")} title={status.asr_error ?? status.llm_error ?? lampText}>
             <span className={`lamp ${lamp}`} />
             {lampText}
@@ -103,7 +103,7 @@ export default function Main() {
       <section className="main-col">
         <header className="titlebar" data-tauri-drag-region>{windowButtons}</header>
         <main className="content scroll">
-          <div className="page">
+          <div className={`page ${section === "settings" && !opened ? "wide" : ""}`} key={opened ? `d${opened.id}` : section}>
             {settings && opened && <HistoryDetail key={opened.id} item={opened} back={() => setOpened(null)} />}
             {settings && !opened && (
               <>

@@ -1,8 +1,17 @@
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import { api } from "../lib/api";
 import { emitLocal, inTauri, on } from "../lib/events";
 import Logo from "./Logo";
 import "./pill.css";
+
+const LIVE_DEMO = [
+  "Hi Sam,",
+  "Hi Sam, I sent the report",
+  "Hi Sam, I sent the report to Alex this morning",
+  "Hi Sam, I sent the report to Alex this morning and he wants",
+  "Hi Sam, I sent the report to Alex this morning and he wants the numbers by Thursday",
+  "Hi Sam, I sent the report to Alex this morning and he wants the numbers by Thursday, so please take a look",
+];
 
 /** Browser preview: loop through every pill state with a fake voice level. */
 function runDemo(): () => void {
@@ -18,8 +27,9 @@ function runDemo(): () => void {
       emitLocal("level", { level: speech * 0.5, secs });
     }, 33);
     timers.push(
-      window.setTimeout(() => emitLocal("live-text", "Hi Sam, I sent the report"), 1600),
-      window.setTimeout(() => { clearInterval(meter); emitLocal("pill", { state: "transcribing", app: "Outlook", message: "" }); }, 4200),
+      // Live words grow past the capsule's width, so the preview shows the tail-anchored caption.
+      ...LIVE_DEMO.map((text, i) => window.setTimeout(() => emitLocal("live-text", text), 900 + i * 450)),
+      window.setTimeout(() => { clearInterval(meter); emitLocal("pill", { state: "transcribing", app: "Outlook", message: "" }); }, 4400),
       window.setTimeout(() => emitLocal("pill", { state: "polishing", app: "Outlook", message: "Hi Sam, I sent the report." }), 5600),
       window.setTimeout(() => emitLocal("pill", { state: "done", app: "Outlook", message: "Hi Sam, I sent the report. Please take a look." }), 7200),
       window.setTimeout(() => emitLocal("pill", { state: "hidden", app: "", message: "" }), 9000),
@@ -56,13 +66,14 @@ function blip(freqs: number[], gain = 0.05) {
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
+/** No word while working: the meter and the sweep are the signal. The backend's message wins when present. */
 const LABEL: Record<string, string> = {
-  listening: "Listening",
-  transcribing: "Transcribing",
-  polishing: "Polishing",
+  listening: "",
+  transcribing: "",
+  polishing: "",
   done: "Pasted",
-  empty: "Nothing to paste",
-  error: "Problem",
+  empty: "Nothing heard",
+  error: "Couldn't paste",
   cancelled: "Cancelled",
 };
 
@@ -87,7 +98,7 @@ export default function Pill() {
         setSecs(0);
         setLive("");
         sounds.current = (await api.getSettings().catch(() => null))?.sounds ?? true;
-        if (sounds.current) blip([740, 1110]);
+        if (sounds.current) blip([740, 1110], 0.04);
       } else if (s.state === "transcribing" && sounds.current) blip([880, 590], 0.04);
       else if (s.state === "done" && sounds.current) blip([1320], 0.025);
       setSt(s);
@@ -118,14 +129,29 @@ export default function Pill() {
   const working = s === "transcribing" || s === "polishing";
   const showText = s === "done" || s === "empty" || s === "error" || s === "cancelled";
   const caption = showText
-    ? (s === "done" ? st.message || "Pasted" : st.message || LABEL[s])
+    ? st.message || LABEL[s]
     : s === "polishing"
-      ? st.message || "Polishing"
+      ? st.message || LABEL.polishing
       : s === "listening"
         ? live
         : "";
   const showCaption = caption.length > 0 && (showText || s === "polishing" || s === "listening");
-  const lamp = s === "listening" ? "rec" : working ? "work" : s === "done" ? "ok" : s === "error" ? "err" : "idle";
+  const lamp = s === "listening" ? "rec" : working ? "work" : s === "done" ? "ok" : s === "error" || s === "empty" ? "err" : "idle";
+
+  // Tail-anchor the caption only when it overflows; a short one sits at the start, unfaded.
+  const textRef = useRef<HTMLDivElement>(null);
+  const [over, setOver] = useState(false);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const box = textRef.current;
+      const span = box?.firstElementChild as HTMLElement | null;
+      setOver(!!box && !!span && span.offsetWidth > box.clientWidth + 1);
+    };
+    measure();
+    // The backend widens the window when words arrive.
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [caption, showCaption]);
   const shape = st.shape ?? (s === "idle" ? "dot" : "pill");
   const dotShape = shape === "dot" && (s === "idle" || s === "listening");
 
@@ -171,7 +197,6 @@ export default function Pill() {
     setSt({ state: "idle", app: "", message: "", shape: "dot", click_stop: false });
   }
 
-  const DOT: Record<string, string> = { rec: "#ff4b2b", work: "#f0a73a", ok: "#3ddc5c", err: "#ff4b2b", idle: "#8a8478" };
   const stoppable = s === "listening" && !!st.click_stop;
 
   return (
@@ -184,13 +209,13 @@ export default function Pill() {
         onClick={stoppable ? stopCapsule : undefined}
         onKeyDown={stoppable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); stopCapsule(); } } : undefined}
       >
-        <span className="pill-logo"><Logo size={18} dot={DOT[lamp]} pulse={lamp === "rec" || lamp === "work"} outline={false} /></span>
+        <span className={`pill-logo ${lamp}`}><Logo size={16} pulse={lamp === "rec" || lamp === "work"} outline={false} /></span>
         {showCaption ? (
-          <div className="pill-text" dir="auto" title={caption}>
-            {caption}
+          <div key="text" ref={textRef} className={`pill-text${over ? " over" : ""}`} dir="auto" title={caption}>
+            <span>{caption}</span>
           </div>
         ) : (
-          <div className={`meter ${working ? "frozen" : ""}`}>
+          <div key="meter" className={`meter ${working ? "frozen" : ""}`}>
             {levels.current.map((v, i) => (
               <i key={i} style={{ transform: `scaleY(${0.12 + v * 0.88})` }} />
             ))}
@@ -269,7 +294,7 @@ function IdleCircle({ listening, secs, onToggle }: { listening: boolean; secs: n
         onToggle();
       }}
     >
-      <Logo dot="#ff1f26" outline={false} fill plateOpacity={0.84} radius={360} />
+      <Logo outline={false} fill plateOpacity={0.84} radius={360} />
       {listening && <span className="idle-time">{fmt(secs)}</span>}
     </button>
   );

@@ -1,24 +1,27 @@
 /* The call card is its own small window (340×84), always dark like the pill. */
 /* Scoped to the call window: every CSS file ships in one bundle, so an unscoped rule would paint the main window dark too. */
-html.view-call, html.view-call body, html.view-call #root { background: #141210 !important; overflow: hidden; margin: 0; }
+html.view-call, html.view-call body, html.view-call #root { background: var(--float-bg) !important; overflow: hidden; margin: 0; }
 
 .call-card {
   display: flex; align-items: center; gap: 12px; height: 100vh; box-sizing: border-box; padding: 0 12px 0 14px;
-  background: #141210; color: #efe7d8; font-family: "IBM Plex Sans", "Vazirmatn", sans-serif;
-  animation: call-in .22s ease-out;
+  background: var(--float-bg); color: var(--float-ink); font-family: var(--sans);
+  animation: call-in 220ms var(--ease-out);
 }
 @keyframes call-in { from { opacity: 0; transform: translateY(6px); } }
 .call-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.call-text b { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.call-text span { font-size: 12px; color: #a79e8d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.call-text b { font-size: 13.5px; font-weight: 600; color: var(--float-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.call-text span { font-size: 12px; color: var(--float-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .call-acts { display: flex; flex-direction: column; gap: 5px; flex: none; }
 .call-acts button {
-  height: 26px; padding: 0 12px; border: 1px solid #3a352d; border-radius: 6px; background: transparent;
-  color: #cfc6b5; font: 500 12px "IBM Plex Sans", sans-serif; cursor: pointer;
+  height: 26px; padding: 0 12px; border: 1px solid var(--float-rule); border-radius: var(--r-1); background: transparent;
+  color: var(--float-ink-2); font: 500 12px var(--sans); white-space: nowrap; cursor: pointer;
+  transition: border-color var(--t-fast), color var(--t-fast), filter var(--t-fast);
 }
-.call-acts button:hover:not(:disabled) { border-color: #6d6556; color: #efe7d8; }
-.call-acts button:disabled { opacity: 0.85; cursor: default; }
-.call-acts button.primary { background: #3ddc5c; border-color: #3ddc5c; color: #0c1a10; }
-.call-acts button.primary:hover:not(:disabled) { background: #57e674; }
-.call-acts button.primary:active:not(:disabled) { background: #2fc44e; }
-.call-acts button.primary:disabled { background: #2fc44e; border-color: #2fc44e; color: #0c1a10; opacity: 1; }
+.call-acts button:hover:not(:disabled) { border-color: var(--float-ink-2); color: var(--float-ink); }
+.call-acts button:disabled { opacity: .6; cursor: default; }
+.call-acts button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.call-acts button.primary:hover:not(:disabled) { color: var(--accent-ink); border-color: var(--accent); filter: brightness(1.08); }
+.call-acts button.primary:disabled { opacity: .75; }
+@media (prefers-reduced-motion: reduce) { .call-card { animation: none; } }
+/* The logo's dot follows the accent here too. */
+.call-card > svg circle { fill: var(--accent); }

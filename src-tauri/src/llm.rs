@@ -334,6 +334,14 @@ impl Llm {
             .json(&body)
             .send()?
             .json()?;
+        // llama-server answers a request it can't take (e.g. longer than its context) with an error object.
+        if let Some(err) = r.get("error").filter(|e| !e.is_null()) {
+            let msg = err["message"].as_str().map(str::to_string).unwrap_or_else(|| err.to_string());
+            return Err(anyhow!("AI engine: {msg}"));
+        }
+        if let Some(n) = r["usage"]["prompt_tokens"].as_u64().filter(|n| *n > 2000) {
+            crate::log::log(format!("ai request: {n} prompt tokens"));
+        }
         let text = r["choices"][0]["message"]["content"].as_str().ok_or_else(|| anyhow!("empty AI reply"))?;
         Ok(text.trim().trim_matches('"').trim().to_string())
     }
@@ -389,7 +397,7 @@ impl Llm {
         let mut s = language.map(|l| format!("\n\nMost of the transcript is {l}. Still write each point in the language it was spoken. Do not translate English into Persian or Persian into English.")).unwrap_or_default();
         s.push_str(&who_is_you(user));
         if has_mine {
-            s.push_str("\n\nThe user also typed their own notes during the meeting (given first). Build on them: keep every point they wrote, in their words, and add the details from the meeting.");
+            s.push_str(MY_NOTES_RULE);
         }
         s
     }
@@ -419,8 +427,43 @@ impl Llm {
     pub fn meeting_merge(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, minutes: u32) -> Result<String> {
         let mine = my_notes.trim();
         let system = format!("{}{}", MEETING_MERGE.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, !mine.is_empty()));
-        let topics_only: Vec<String> = parts.iter().map(|p| strip_sections(p, &LIST_SECTIONS)).collect();
-        let joined = topics_only.iter().enumerate().map(|(i, p)| format!("### Part {}\n{p}", i + 1)).collect::<Vec<_>>().join("\n\n");
+        let mut topics_only: Vec<String> = parts.iter().map(|p| strip_sections(p, &LIST_SECTIONS)).collect();
+        let join = |t: &[String]| t.iter().enumerate().map(|(i, p)| format!("### Part {}\n{p}", i + 1)).collect::<Vec<_>>().join("\n\n");
+        // A long meeting's parts don't fit in one request: merge them in groups first, then merge
+        // those (as often as needed). Decisions, next steps etc. still come from the original parts below.
+        while join(&topics_only).chars().count() > MERGE_BUDGET && topics_only.len() > 1 {
+            let mut groups: Vec<Vec<String>> = vec![Vec::new()];
+            for t in topics_only {
+                let last = groups.last_mut().unwrap();
+                if !last.is_empty() && join(last).chars().count() + t.chars().count() + 16 > MERGE_BUDGET {
+                    groups.push(vec![t]);
+                } else {
+                    last.push(t);
+                }
+            }
+            if groups.iter().all(|g| g.len() == 1) {
+                // Every part is already as big as a request can be: merge them in pairs anyway.
+                groups = groups.into_iter().flatten().collect::<Vec<_>>().chunks(2).map(|c| c.to_vec()).collect();
+            }
+            crate::log::log(format!("meeting notes: merging in {} groups first", groups.len()));
+            let mid = MEETING_MERGE.replace("{N}", "6").replace("{RULES}", NOTE_RULES);
+            let mid = format!("{mid}{}", Self::meeting_extra(language, user, false));
+            let mut next = Vec::new();
+            for g in groups {
+                if g.len() == 1 {
+                    next.extend(g);
+                    continue;
+                }
+                let merged = self.chat_with(&mid, &join(&g), 1500, Duration::from_secs(600))?;
+                // The group's own title line would read as a topic in the next round.
+                let merged: String = merged.lines().filter(|l| !l.starts_with("# ")).collect::<Vec<_>>().join("\n");
+                next.push(strip_sections(&merged, &LIST_SECTIONS));
+            }
+            topics_only = next;
+        }
+        let joined = join(&topics_only);
+        // The notepad also counts against the context: keep a very long one to its start.
+        let mine: String = mine.chars().take(4_000).collect();
         let body = if mine.is_empty() { joined } else { format!("My own notes:\n{mine}\n\n---\n\n{joined}") };
         let mut notes = strip_sections(&self.chat_with(&system, &body, 1500, Duration::from_secs(600))?, &LIST_SECTIONS);
         // Steps and the fix are copied from the parts, so a merge cannot turn a finished fix into a to-do.
@@ -443,6 +486,15 @@ impl Llm {
         Ok(drop_empty_sections(notes.trim()))
     }
 }
+
+/// Most part-note text sent in one merge request (characters). Leaves room in the 16k-token context
+/// for the rules and the answer, also for Persian, which takes more tokens per character.
+const MERGE_BUDGET: usize = 9_000;
+
+/// Granola-style notes: what the user typed is the skeleton and stays in their words. The window
+/// shows the user's lines in ink and the AI's additions in gray by matching them, so they must
+/// survive verbatim.
+const MY_NOTES_RULE: &str = "\n\nThe user typed their own notes during the meeting (given first, under 'My own notes'). They are the skeleton of your notes: keep their headings ('#' or '##' lines) as ## sections, in their order. Copy each of their bullet lines exactly as written (fix typos only). Under each of their headings add the details from the meeting as more bullets. Topics they did not write about go after their sections. Never drop or reword one of their lines.";
 
 /// Sections gathered from the part notes, so the merge cannot drop the fix or a leftover task.
 const LIST_SECTIONS: [&str; 8] = [

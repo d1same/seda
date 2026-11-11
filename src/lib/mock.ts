@@ -38,7 +38,7 @@ const history: HistoryItem[] = [
   { id: 3, ts: ago(95), app: "Gmail", style: "email", raw: "send the contract to john no wait to samantha by friday", cleaned: "Send the contract to Samantha by Friday.", corrected: "Send the contract to Sam by Friday.", audio: "d.wav", secs: 3.1, asr_ms: 980, llm_ms: 1100 },
 ];
 
-const meetingNotes = "## Summary\n- Release moves to Thursday; staging is green.\n- Marketing budget is cut by 10% next quarter.\n## Decisions\n- Sam owns the release checklist.\n## Action items\n- [ ] Sam: send the updated proposal (Friday)\n- [ ] You: book the review meeting with John\n## Open questions\n- Do we need a second QA pass?";
+const meetingNotes = "## Release\n- Release Thursday?\n- Release moves to Thursday; staging is green.\n## Budget\n- Budget -10%\n- Marketing budget is cut by 10% next quarter.\n## Decisions\n- Sam owns the release checklist.\n## Action items\n- [ ] Sam: send the updated proposal (Friday)\n- [ ] You: book the review meeting with John\n## Open questions\n- Do we need a second QA pass?";
 const meetingSegs = [
   { who: "Them", start: 2, text: "سلام، خوبین؟ بریم سراغ ریلیز این هفته." },
   { who: "You", start: 9, text: "Staging is green, all tests passed. I think we can ship Thursday." },
@@ -46,7 +46,7 @@ const meetingSegs = [
   { who: "You", start: 30, text: "باشه، من جلسه‌ی ریویو رو با جان می‌ذارم." },
 ];
 const meetings = [
-  { id: 2, ts: ago(30), secs: 1860, title: "Release plan and budget", people: "Sam", cal: "Release plan", search: "Release plan and budget\nSam\nRelease plan\nstaging Thursday checklist", transcript: JSON.stringify(meetingSegs), notes: meetingNotes, my_notes: "release thu?\nbudget -10%", chat: JSON.stringify([{ role: "you", text: "Who owns the release checklist?" }, { role: "ai", text: "Sam — she agreed at 0:21." }]) },
+  { id: 2, ts: ago(30), secs: 1860, title: "Release plan and budget", people: "Sam", cal: "Release plan", search: "Release plan and budget\nSam\nRelease plan\nstaging Thursday checklist", transcript: JSON.stringify(meetingSegs), notes: meetingNotes, my_notes: "# Release\n- release thursday?\n# Budget\n- budget -10%", chat: JSON.stringify([{ role: "you", text: "Who owns the release checklist?" }, { role: "ai", text: "Sam — she agreed at 0:21." }]) },
   { id: 1, ts: ago(60 * 26), secs: 920, title: "Weekly sync", people: "", cal: "", search: "Weekly sync", transcript: JSON.stringify(meetingSegs.slice(0, 2)), notes: "## Summary\n- Short status round.", my_notes: "", chat: "[]" },
 ];
 let meetingOn = false;
@@ -65,6 +65,7 @@ export function mockInvoke(cmd: string, args: any): any {
     case "update_install": return;
     case "call_start": case "call_dismiss": case "call_hide": case "call_open": return;
     case "meeting_set_my_notes": case "meeting_save_notes": case "meeting_clear_chat": return;
+    case "meeting_update_my_notes": { const m = meetings.find((x) => x.id === args.id); if (m) m.my_notes = args.text; return; }
     case "meetings_list": return meetings.map((m) => ({ ...m, transcript: "", notes: "" }));
     case "meeting_get": return meetings.find((m) => m.id === args.id) ?? null;
     case "meeting_delete": case "meeting_renotes": return;

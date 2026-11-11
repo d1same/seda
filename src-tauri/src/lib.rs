@@ -61,6 +61,8 @@ struct ActiveRec {
 struct LiveText {
     done: usize,
     parts: Vec<String>,
+    /// The audio taken from the recorder so far (16 kHz). The recorder keeps only what came after.
+    audio: Vec<f32>,
 }
 
 struct FixSession {
@@ -530,10 +532,14 @@ impl Core {
             let (language, vocab) = (me.settings.read().language.clone(), me.vocab());
             while me.recording.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(500));
-                let Some(snap) = me.rec.lock().as_ref().map(|r| r.rec.snapshot()) else { break };
-                // Held while transcribing, so finishing waits for a chunk that is in progress.
+                // Held while transcribing, so finishing waits for a chunk that is in progress. Taken
+                // before the recorder, so audio moved out of it is always in `audio` when finishing reads it.
                 let mut l = live.lock();
-                if l.done >= snap.len() {
+                // Only the new audio is moved out (the recorder's buffer is emptied), so this stays
+                // cheap however long you talk and never holds up the audio callback.
+                let Some(new) = me.rec.lock().as_ref().map(|r| r.rec.drain()) else { break };
+                l.audio.extend(new);
+                if l.done >= l.audio.len() {
                     continue;
                 }
                 let from = l.done;
@@ -543,9 +549,9 @@ impl Core {
                     let guard = me.asr.read();
                     let Some(asr) = guard.as_ref() else { break };
                     // `cut` counts samples from `from`, the start of this tail.
-                    let Some(cut) = asr.pause_cut(&snap[from..]) else { continue };
+                    let Some(cut) = asr.pause_cut(&l.audio[from..]) else { continue };
                     let t = Instant::now();
-                    let spoken = asr.transcribe(&snap[from..from + cut], &language, &vocab);
+                    let spoken = asr.transcribe(&l.audio[from..from + cut], &language, &vocab);
                     (cut, t.elapsed(), spoken)
                 };
                 let (cut, took, spoken) = step;
@@ -583,9 +589,16 @@ impl Core {
         self.recording.store(false, Ordering::SeqCst);
         hotkey::set_recording(false);
         let app_name = win::friendly_app_name(&active.exe, &active.title);
-        let samples = match active.rec.stop() {
+        let rest = match active.rec.stop() {
             Ok(s) => s,
             Err(e) => return self.pill("error", "", format!("Microphone: {e}")),
+        };
+        // What the live transcriber already took from the recorder, then the rest.
+        let samples = {
+            let mut l = active.live.lock();
+            let mut all = std::mem::take(&mut l.audio);
+            all.extend(rest);
+            all
         };
         let secs = samples.len() as f64 / audio::RATE as f64;
         if secs < 0.35 {
@@ -782,7 +795,13 @@ impl Core {
         let Some(original) = self.fix.lock().as_ref().map(|f| f.original.clone()) else { return };
         let me = self.clone();
         std::thread::spawn(move || {
-            let result = match me.llm.lock().as_mut() {
+            // Meeting notes can hold the AI for minutes: say so instead of hanging.
+            let Some(mut guard) = me.llm.try_lock_for(Duration::from_secs(2)) else {
+                let payload = serde_json::json!({ "mode": mode, "error": AI_BUSY });
+                let _ = me.app.emit_to("fix", "fix-result", payload);
+                return;
+            };
+            let result = match guard.as_mut() {
                 Some(l) => l.rewrite(&original, &mode).map_err(|e| e.to_string()),
                 None => Err(match me.status.lock().llm.as_str() {
                     "loading" => "The text AI is still starting — try again in a moment.".to_string(),
@@ -822,11 +841,13 @@ const CORRECTION_CUES: &[&str] = &[
     "नहीं रुको", "मतलब", "不对", "我是说", "いや", "じゃなくて",
 ];
 
-/// Short, clean phrases don't need the writing AI: Whisper already punctuates them, and skipping
-/// the AI makes quick messages paste in about a second.
-/// "smart" polish: the writing AI runs only when it changes something that matters — a
+/// Shown when the writing AI is busy with something long (meeting notes).
+const AI_BUSY: &str = "Seda is writing meeting notes right now. Try again in a minute.";
+
+/// "Smart" polish: the writing AI runs only when it changes something that matters — a
 /// self-correction or filler words, or a long email/ticket that needs layout. Everything else
-/// (most dictations) pastes straight after transcription: the speech model already punctuates.
+/// (most dictations) pastes straight after transcription: the speech model already punctuates,
+/// and skipping the AI makes quick messages paste in about a second.
 fn needs_polish(text: &str, style: &str) -> bool {
     let words = text.split_whitespace().count();
     let long_formatted = (style == llm::STYLE_EMAIL || style == llm::STYLE_TICKET) && (words > 30 || text.chars().count() > 160);
@@ -1338,24 +1359,21 @@ fn stop_meeting(core: &Arc<Core>) -> Option<i64> {
         c.linked = None;
         c.dismissed = detect::active().iter().map(|a| a.id).collect();
     }
-    let (secs, ts, mine) = (m.offset as f64 + m.started.elapsed().as_secs_f64(), m.ts.clone(), m.my_notes.lock().clone());
+    let (secs, id) = (m.offset as f64 + m.started.elapsed().as_secs_f64(), m.id);
     let appt = m.appointment.lock().clone();
-    let resumed = m.resume_id;
+    let notepad = m.my_notes.clone();
     let _ = core.app.emit("meeting-state", false);
     let (mut segs, live) = m.stop();
+    let mine = notepad.lock().clone();
     for seg in &mut segs {
         seg.who = smart::label_who(&seg.who, &appt.people);
     }
     let transcript = serde_json::to_string(&segs).unwrap_or_default();
-    let id = match resumed {
-        // Resumed: the same meeting grows; its notes are rewritten below.
-        Some(id) => {
-            core.store.update_meeting_recording(id, secs, &transcript, &mine);
-            core.store.set_meeting_notes(id, "", "");
-            id
-        }
-        None => core.store.add_meeting(&ts, secs, &transcript, &mine),
-    };
+    // The row has existed since the start (checkpointed while recording). A resumed meeting grows;
+    // its notes are rewritten below either way.
+    core.store.update_meeting_recording(id, secs, &transcript, &mine);
+    core.store.set_meeting_notes(id, "", "");
+    core.store.set_meeting_live(id, false);
     if !appt.subject.is_empty() || !appt.people.is_empty() {
         // The title stays empty until the notes are written, so the page still shows that it is working.
         // The calendar subject is stored separately and the list uses it as the name in the meantime.
@@ -1547,6 +1565,55 @@ fn call_apps() -> Vec<detect::AppInfo> {
     detect::apps()
 }
 
+/// Meetings still marked as recording when Seda starts: Seda or Windows stopped during a meeting.
+/// Their transcript was checkpointed every few seconds; finish them and write their notes once
+/// the AI is up. A row checkpointed in the last minute may belong to another running copy of
+/// Seda, so it is left alone until its checkpoints have stopped for a minute.
+fn recover_meetings(core: &Arc<Core>) {
+    let mut found = Vec::new();
+    for round in 0..3 {
+        // This copy's own running meeting is live and fresh: never a candidate.
+        let own = core.meeting.lock().as_ref().map(|m| m.id);
+        let rows: Vec<(i64, i64)> = core.store.live_meetings().into_iter().filter(|(id, _)| Some(*id) != own).collect();
+        for (id, _) in rows.iter().filter(|(_, age)| *age > 60) {
+            core.store.set_meeting_live(*id, false);
+            found.push(*id);
+        }
+        // Rows checkpointed in the last minute: look again once their minute is up.
+        if round == 2 || rows.iter().all(|(_, age)| *age > 60) {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(61));
+    }
+    found.sort();
+    found.dedup();
+    if found.is_empty() {
+        return;
+    }
+    // Wait for the writing AI (or give up after 10 minutes: the notes then say so and
+    // "Write notes again" works later).
+    let t = Instant::now();
+    while core.status.lock().llm == "loading" && t.elapsed() < Duration::from_secs(600) {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    for id in found {
+        let Some(m) = core.store.meeting(id) else { continue };
+        if (m.transcript.trim().is_empty() || m.transcript.trim() == "[]") && m.my_notes.trim().is_empty() {
+            // Stopped in its first seconds: nothing to keep.
+            core.store.delete_meeting(id);
+            continue;
+        }
+        log::log(format!("recovered meeting {id} that was still recording when Seda closed"));
+        core.store.set_meeting_notes(id, "", "");
+        let _ = core.app.emit("meetings-changed", ());
+        // The part notes written during the meeting were checkpointed too.
+        let saved: serde_json::Value = serde_json::from_str(&m.parts).unwrap_or_default();
+        let parts: Vec<String> = serde_json::from_value(saved["parts"].clone()).unwrap_or_default();
+        let until = if parts.is_empty() { 0.0 } else { saved["until"].as_f64().unwrap_or(0.0) as f32 };
+        write_meeting_notes(core, id, Some(meeting::LiveNotes::from_saved(parts, until)));
+    }
+}
+
 /// live: the part notes written during the meeting (None when rewriting later).
 fn write_meeting_notes(core: &Core, id: i64, live: Option<meeting::LiveNotes>) {
     let Some(m) = core.store.meeting(id) else { return };
@@ -1563,8 +1630,18 @@ fn write_meeting_notes(core: &Core, id: i64, live: Option<meeting::LiveNotes>) {
         Ok((n, parts, until)) => {
             // Kept so Resume only needs notes for the new stretch.
             core.store.set_meeting_parts(id, &serde_json::json!({ "parts": parts, "until": until }).to_string());
-            let title = n.lines().find_map(|l| l.strip_prefix("# ")).unwrap_or("Meeting").trim().to_string();
-            let body = n.lines().filter(|l| !l.starts_with("# ")).collect::<Vec<_>>().join("\n").trim().to_string();
+            // The title is the first line only: a "# Budget" the user typed may appear further down.
+            let first = n.lines().position(|l| !l.trim().is_empty());
+            let title = first.and_then(|i| n.lines().nth(i)).and_then(|l| l.strip_prefix("# ")).unwrap_or("Meeting").trim().to_string();
+            let body = n
+                .lines()
+                .enumerate()
+                .filter(|(i, l)| !(Some(*i) == first && l.starts_with("# ")))
+                .map(|(_, l)| if l.starts_with("# ") { format!("#{l}") } else { l.to_string() })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string();
             (title, body)
         }
         Err(e) => ("Meeting".to_string(), format!("Couldn't write notes: {e}. The transcript is saved — try “Write notes again”.")),
@@ -1595,7 +1672,7 @@ fn meeting_status(core: CoreState) -> MeetingStatus {
             MeetingStatus {
                 running: true,
                 secs: m.offset as f64 + m.started.elapsed().as_secs_f64(),
-                resuming: m.resume_id.and_then(|id| core.store.meeting(id)).map(|x| x.title).unwrap_or_default(),
+                resuming: if m.resumed { core.store.meeting(m.id).map(|x| x.title).unwrap_or_default() } else { String::new() },
                 title: appt.subject,
                 people: appt.people.join(", "),
                 segments: m.segments.lock().clone(),
@@ -1612,6 +1689,14 @@ fn meeting_set_my_notes(core: CoreState, text: String) {
     if let Some(m) = core.meeting.lock().as_ref() {
         *m.my_notes.lock() = text;
     }
+}
+
+/// "My notes" edited after the meeting (then "Rebuild notes" rewrites the notes around them).
+#[tauri::command]
+fn meeting_update_my_notes(core: CoreState, id: i64, text: String) {
+    core.store.update_my_notes(id, &text);
+    // The notes page marks your lines from these.
+    let _ = core.app.emit("meetings-changed", ());
 }
 
 /// Notes edited by hand.
@@ -1640,7 +1725,7 @@ fn meeting_ask(core: CoreState, id: i64, question: String) -> Result<Vec<ChatTur
     let context = meeting::ask_context(&m.title, &m.notes, &segs, &question);
     let t = Instant::now();
     let reply = {
-        let mut guard = core.llm.lock();
+        let mut guard = core.llm.try_lock_for(Duration::from_secs(2)).ok_or(AI_BUSY)?;
         let llm = guard.as_mut().ok_or("The writing AI isn't running yet")?;
         let user = core.settings.read().user_name.clone();
         llm.ask_meeting(&context, &history, &question, &user).map_err(|e| e.to_string())?
@@ -1883,7 +1968,7 @@ fn tauri_main() {
             open_data_folder, test_file, fix_rewrite, fix_accept, fix_cancel, setup_info, setup_download, setup_cancel,
             mic_test_start, mic_test_stop, list_mics, open_mic_privacy, test_pill, finish_onboarding, diagnostics, open_log,
             meeting_start, meeting_stop, meeting_status, meetings_list, meeting_get, meeting_delete, meeting_renotes,
-            meeting_set_my_notes, meeting_save_notes, meeting_ask, meeting_clear_chat,
+            meeting_set_my_notes, meeting_update_my_notes, meeting_save_notes, meeting_ask, meeting_clear_chat,
             call_start, call_dismiss, call_hide, call_open, call_apps, local_hotkey, dot_click, dot_nudge, dot_save,
             app_version, update_status, update_check, update_install, meeting_resume
         ])
@@ -1934,6 +2019,10 @@ fn tauri_main() {
 
             core.load_asr();
             core.load_llm();
+            {
+                let c = core.clone();
+                std::thread::spawn(move || recover_meetings(&c));
+            }
             sync_autostart(app.handle(), settings.autostart);
             if std::env::args().any(|a| a == "--hidden") {
                 if let Some(w) = app.get_webview_window("main") {
