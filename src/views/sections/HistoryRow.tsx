@@ -1,4 +1,5 @@
 import type { HistoryItem } from "../../lib/api";
+import Icon from "../Icons";
 import { Tick, type Selection } from "./Select";
 
 const clockTime = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -21,9 +22,10 @@ export default function HistoryRow({ item, open, sel }: { item: HistoryItem; ope
     <div className={`hrow ${item.corrected ? "corrected" : ""} ${picking && sel.has(item.id) ? "picked" : ""}`}>
       <button className={`hrow-line ${picking ? "picking" : ""}`} onClick={() => (picking ? sel.toggle(item.id) : open(item))}>
         {picking && <Tick on={sel.has(item.id)} />}
+        {item.corrected && !picking && <span className="hfix" title="Corrected · used for training"><Icon name="check" size={12} /></span>}
         <span className="htime">{clockTime(item.ts)}</span>
         <span className="happ">{item.app || "—"}</span>
-        <span className="htext" dir="auto">{text.replace(/\s+/g, " ")}</span>
+        <span className="htext"><span className="bidi-clip" dir="auto">{text.replace(/\s+/g, " ")}</span></span>
         <span className="hdur">{item.secs.toFixed(0)}s</span>
       </button>
     </div>

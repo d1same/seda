@@ -1,33 +1,103 @@
-/* The pill IS the window: a small solid capsule (rounded by Windows 11 itself), so there is
-   nothing transparent or clipped that could fail to draw. */
+/* The status capsule is a solid window with native rounded corners.
+   The desktop icon is the Seda mark on a clear window: the corners outside the icon show the desktop. */
 /* Scoped to the pill window: every CSS file ships in one bundle, so an unscoped rule would paint the main window dark too. */
-html.view-pill, html.view-pill body, html.view-pill #root { background: #141210 !important; overflow: hidden; margin: 0; }
+/* WebView2 fills a transparent page with white when this document follows the dark system theme.
+   The capsule and the icon already set their own colors, so this window stays on the light scheme
+   and the icon's corners stay clear on a dark desktop. `only` stops the browser overriding it. */
+html.view-pill { color-scheme: only light !important; color: var(--float-ink); }
+html.view-pill, html.view-pill body, html.view-pill #root { background: var(--float-bg) !important; overflow: hidden; margin: 0; }
+html.view-pill:has(.pill-stage.dot),
+html.view-pill:has(.pill-stage.dot) body,
+html.view-pill:has(.pill-stage.dot) #root { background: transparent !important; }
 
-.pill-stage { height: 100vh; display: flex; align-items: center; justify-content: center; transition: opacity .14s ease; }
-.pill-stage.out { opacity: 0; }
-.pill-stage.in { opacity: 1; }
+.pill-stage { height: 100vh; display: flex; align-items: center; justify-content: center; }
+/* Enter: rise 6px and fade in. Exit (after the backend hides it): sink 4px and fade out.
+   Only the capsule moves: a transform on the stage would become the containing block of the
+   dragged idle circle in the browser preview. */
+.pill-stage.in:not(.dot) .pill { animation: pill-in 140ms var(--ease-out); }
+.pill-stage.out .pill { opacity: 0; transform: translateY(4px); transition: opacity 120ms ease-in, transform 120ms ease-in; }
+@keyframes pill-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 .pill {
   display: flex; align-items: center; gap: 8px;
   width: 100vw; height: 100vh; padding: 0 10px 0 7px; box-sizing: border-box;
-  background: #141210; color: #efe7d8;
-  font-family: "IBM Plex Sans", "Vazirmatn", sans-serif;
+  background: var(--float-bg); color: var(--float-ink);
+  font-family: var(--sans);
 }
 
-.idle-logo { opacity: .6; }
+.idle-dot {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  max-width: 48px;
+  max-height: 48px;
+  aspect-ratio: 1;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--float-ink);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  box-shadow: none;
+  outline: none;
+  appearance: none;
+}
+.idle-dot > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* The tile sits at 84 % so the desktop shows through; full strength on hover. */
+.idle-dot rect { transition: fill-opacity var(--t-fast); }
+.idle-dot:hover rect { fill-opacity: 1; }
+.idle-dot circle { fill: var(--accent); }
+.idle-dot:active { cursor: grabbing; }
+.idle-time {
+  position: absolute; left: 0; right: 0; bottom: 5px; z-index: 1;
+  font: 500 8px/1 var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--float-ink); text-align: center; pointer-events: none;
+  text-shadow: 0 1px 2px var(--float-bg);
+}
+
+/* The logo's dot is the status lamp. CSS beats the SVG's fill attribute. */
 .pill-logo { display: flex; flex: none; }
-.logo-pulse { animation: tally 1.1s ease-in-out infinite; }
-@keyframes tally { 50% { opacity: .45; } }
+.pill-logo circle { fill: var(--float-ink-2); }
+.pill-logo.rec circle, .pill-logo.err circle { fill: var(--accent); }
+.pill-logo.work circle { fill: var(--warn); }
+.pill-logo.ok circle { fill: var(--float-ink); }
+.logo-pulse { animation: tally 1.2s ease-in-out infinite; }
+@keyframes tally { 50% { opacity: .35; } }
 
 /* Level bars: newest on the right. transform-only so it stays cheap on integrated graphics. */
 .meter { position: relative; display: flex; align-items: center; gap: 2px; height: 14px; flex: 1; min-width: 0; overflow: hidden; }
-.meter i { display: block; width: 2px; height: 100%; flex: none; background: #efe7d8; border-radius: 1px; transform-origin: center; transition: transform 70ms linear; }
+.meter i { display: block; width: 2px; height: 100%; flex: none; background: var(--float-ink); transform-origin: center; transition: transform 70ms linear; }
+/* Working: bars frozen at 25 %, one soft highlight sweeping across. No word: the sweep is the signal. */
 .meter.frozen i { opacity: .25; }
-.sweep { position: absolute; top: 0; bottom: 0; width: 18px; background: linear-gradient(90deg, transparent, rgba(240,167,58,.8), transparent); animation: sweep .9s ease-in-out infinite alternate; }
+.sweep {
+  position: absolute; top: 0; bottom: 0; width: 18px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--float-ink) 60%, transparent), transparent);
+  animation: sweep .9s ease-in-out infinite alternate;
+}
 @keyframes sweep { from { left: -18px; } to { left: 100%; } }
 
-.pill-time { flex: none; font: 500 11px/1 "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; color: #a79e8d; }
+.pill-time { flex: none; font: 500 11px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--float-ink-2); }
+.pill.stoppable { cursor: pointer; }
+.pill-stop { flex: none; width: 10px; height: 10px; border-radius: var(--r-1); background: var(--accent); }
 
-.pill-text { flex: 1; min-width: 0; font-size: 12px; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; unicode-bidi: plaintext; }
-.pill.done .pill-text { color: #8fe3a0; }
-.pill.error .pill-text, .pill.empty .pill-text { color: #f3c08a; font-size: 11.5px; }
+/* Caption. When it is longer than the capsule it is tail-anchored: the newest words stay
+   visible and the clipped start fades out over 24px. `justify-content` is logical, so
+   flex-end keeps the end of a Persian line in view too; only the fade flips sides. */
+.pill-text {
+  flex: 1; min-width: 0; display: flex; justify-content: flex-start; overflow: hidden;
+  white-space: nowrap; font-size: 12.5px; line-height: 1; color: var(--float-ink);
+  transition: color 160ms ease;
+}
+.pill-text > span { flex: none; }
+.pill-text.over { justify-content: flex-end; -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px); mask-image: linear-gradient(90deg, transparent, #000 24px); }
+.pill-text.over:dir(rtl) { -webkit-mask-image: linear-gradient(270deg, transparent, #000 24px); mask-image: linear-gradient(270deg, transparent, #000 24px); }
+.pill.polishing .pill-text { color: var(--float-ink-2); }
+.pill.cancelled .pill-text { color: var(--float-ink-2); }
+.pill.error .pill-text, .pill.empty .pill-text { color: var(--float-err); font-size: 11.5px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pill-stage.in:not(.dot) .pill { animation: none; }
+  .logo-pulse { animation: none; }
+  .sweep { animation: none; left: 0; width: 100%; height: 2px; top: auto; bottom: 0; }
+}

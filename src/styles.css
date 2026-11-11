@@ -1,164 +1,227 @@
-/* Seda — "studio" design language: paper + ink, the logo's green as brand colour (red only for
-   recording and errors), hairline rules, mono micro-labels. No gradients, glass, or floating cards. */
+/* Seda — "studio" design language: paper + ink, one vermilion accent (the logo's dot), hairline
+   rules, mono kickers for metadata. Three radii, one shadow (floating things only). No gradients,
+   glass, or green. Persian is set in Vazirmatn, bound by unicode-range so mixed lines share a
+   baseline with IBM Plex. */
+
+@font-face {
+  font-family: "Seda Fa"; font-weight: 400; font-display: swap;
+  src: url("./assets/fonts/vazirmatn-arabic-400-normal.woff2") format("woff2");
+  unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C-200D;
+  size-adjust: 93%;
+}
+@font-face {
+  font-family: "Seda Fa"; font-weight: 500; font-display: swap;
+  src: url("./assets/fonts/vazirmatn-arabic-500-normal.woff2") format("woff2");
+  unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C-200D;
+  size-adjust: 93%;
+}
+@font-face {
+  font-family: "Seda Fa"; font-weight: 600; font-display: swap;
+  src: url("./assets/fonts/vazirmatn-arabic-600-normal.woff2") format("woff2");
+  unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF, U+200C-200D;
+  size-adjust: 93%;
+}
 
 :root {
-  --paper: #f2eee5;
-  --paper-2: #e9e3d6;
-  --paper-3: #ddd5c4;
-  --ink: #1c1a16;
-  --ink-2: #5b554a;
-  --ink-3: #8f887a;
-  --rule: #d3cab8;
-  --rule-strong: #b9ae99;
-  --brand: #1e9645;
-  --brand-ink: #ffffff;
-  --brand-soft: #cdebd6;
-  --signal: #e2462c;
-  --signal-ink: #fffaf3;
-  --signal-soft: #f6d3c8;
-  --ok: #1e9645;
-  --amber: #b97813;
-  --sel: #f0c9a8;
-  --focus: #1c1a16;
+  /* paper & ink */
+  --paper: #f3efe6;  --paper-2: #ebe6da;  --paper-3: #e0d9c9;
+  --ink: #1b1915;    --ink-2: #55504a;    --ink-3: #817a6d;
+  --rule: #d9d2c2;   --rule-strong: #bdb4a0;
+  /* the one accent: vermilion */
+  --accent: #d9431e; --accent-ink: #fff7f2; --accent-soft: #f7d9cf; --accent-faint: rgba(217, 67, 30, .08);
+  /* working */
+  --warn: #b97813;   --warn-soft: #f3e3c3;
+  --sel: #f6d1c4;    --focus: var(--accent);
+  /* always-dark surfaces (pill, call card) */
+  --float-bg: #141210; --float-ink: #efe7d8; --float-ink-2: #a79e8d; --float-rule: #2c2823; --float-err: #ffb39e;
 
-  --sans: "IBM Plex Sans", "Vazirmatn", "Segoe UI", system-ui, sans-serif;
-  --mono: "IBM Plex Mono", "Vazirmatn", ui-monospace, monospace;
-  --fa: "Vazirmatn", "IBM Plex Sans", sans-serif;
-  --r: 3px;
+  /* type */
+  --sans: "IBM Plex Sans", "Seda Fa", "Vazirmatn", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", "Seda Fa", "Vazirmatn", ui-monospace, monospace;
+  --fs-xs: 11px;  --fs-sm: 12.5px; --fs-base: 14px; --fs-md: 15.5px; --fs-lg: 17px;
+  --fs-xl: 22px;  --fs-2xl: 28px;  --fs-3xl: 34px;
+  --lh-ui: 1.45;  --lh-read: 1.7;
+
+  /* space: 4-base */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 24px; --s8: 32px; --s10: 40px; --s12: 48px;
+
+  /* shape: three radii only */
+  --r-1: 4px;      /* buttons, inputs, chips, keycaps, tags, switch */
+  --r-2: 8px;      /* panels, tiles, the ask thread, notice boxes */
+  --r-pill: 999px; /* ask bar, round icon buttons, the recording chip */
+
+  /* depth: one shadow, used by floating things only */
+  --shadow-float: 0 10px 30px -14px rgba(27, 25, 21, .45), 0 0 0 1px var(--rule);
+
+  /* motion */
+  --t-fast: 120ms; --t-base: 180ms; --ease-out: cubic-bezier(.2, .7, .2, 1);
+
+  /* Older names, kept so every screen follows the new palette. */
+  --brand: var(--accent); --brand-ink: var(--accent-ink); --brand-soft: var(--accent-soft);
+  --signal: var(--accent); --signal-ink: var(--accent-ink); --signal-soft: var(--accent-soft);
+  --ok: var(--ink); --amber: var(--warn);
+  --fa: var(--sans);
+  --r: var(--r-1);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #151410;
-    --paper-2: #1d1b17;
-    --paper-3: #26231e;
-    --ink: #ece6d8;
-    --ink-2: #aaa293;
-    --ink-3: #6f685c;
-    --rule: #2d2a24;
-    --rule-strong: #443f36;
-    --brand: #3ddc5c;
-    --brand-ink: #0c1a10;
-    --brand-soft: #173d22;
-    --signal: #ff5a3c;
-    --signal-ink: #1a0f0b;
-    --signal-soft: #4a2219;
-    --ok: #3ddc5c;
-    --amber: #e3a540;
-    --sel: #5b3a22;
-    --focus: #ece6d8;
+    --paper: #151411;  --paper-2: #1d1b18;  --paper-3: #262320;
+    --ink: #ece7da;    --ink-2: #aca496;    --ink-3: #736c60;
+    --rule: #2e2b25;   --rule-strong: #46413a;
+    --accent: #ff6a3f; --accent-ink: #1a0c07; --accent-soft: #4a2114; --accent-faint: rgba(255, 106, 63, .10);
+    --warn: #e3a540;   --warn-soft: #3d2d12;
+    --sel: #5a2d1f;
+    --shadow-float: 0 10px 30px -10px rgba(0, 0, 0, .7), 0 0 0 1px var(--rule-strong);
     color-scheme: dark;
   }
 }
+@media (prefers-reduced-motion: reduce) { :root { --t-fast: 0ms; --t-base: 0ms; } }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body {
-  font: 14px/1.5 var(--sans);
+  font: var(--fs-base)/var(--lh-ui) var(--sans);
   color: var(--ink);
   background: var(--paper);
   -webkit-font-smoothing: antialiased;
+  font-synthesis: none;
   user-select: none;
   overflow: hidden;
 }
 ::selection { background: var(--sel); }
-[dir="rtl"], .fa { font-family: var(--fa); }
 input, textarea, button, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* Anything that shows the user's words: Persian reads right-to-left, English left-to-right. */
+[dir="auto"] { unicode-bidi: plaintext; text-align: start; }
 
 /* ---------- shared primitives ---------- */
 
-.label {
-  font: 500 10.5px/1 var(--mono);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-}
+/* Metadata kicker: tracked mono capitals (dates, groups, small headers). */
+.kicker { font: 500 var(--fs-xs)/1 var(--mono); letter-spacing: .10em; text-transform: uppercase; color: var(--ink-3); }
+/* Field label: sentence case. */
+.label { font: 600 12.5px/1.3 var(--sans); color: var(--ink-3); }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .muted { color: var(--ink-2); }
 .faint { color: var(--ink-3); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .btn {
   display: inline-flex; align-items: center; gap: 8px;
   height: 32px; padding: 0 14px;
-  border: 1px solid var(--rule-strong); border-radius: var(--r);
-  background: transparent; font-weight: 500; font-size: 13px;
-  transition: background .12s, border-color .12s;
+  border: 1px solid var(--rule-strong); border-radius: var(--r-1);
+  background: var(--paper); font: 500 13px var(--sans); color: var(--ink); white-space: nowrap;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
 }
 .btn:hover { background: var(--paper-2); border-color: var(--ink-3); }
 .btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-.btn.primary:hover { background: var(--ink-2); }
-.btn.signal { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
-.btn.ghost { border-color: transparent; }
+.btn.primary:hover { background: var(--ink-2); border-color: var(--ink-2); }
+/* The one accent button per screen (Start meeting, Take notes, Replace). */
+.btn.accent, .btn.signal { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.accent:hover, .btn.signal:hover { filter: brightness(1.06); background: var(--accent); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--ink-2); }
+.btn.ghost:hover { color: var(--ink); background: var(--paper-2); }
+.btn.danger:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-faint); }
 .btn.small { height: 26px; padding: 0 10px; font-size: 12px; }
 .btn:disabled { opacity: .45; cursor: default; }
 
 .field {
   width: 100%; height: 34px; padding: 0 10px;
-  background: var(--paper); border: 1px solid var(--rule-strong); border-radius: var(--r);
-  user-select: text;
+  background: var(--paper); border: 1px solid var(--rule-strong); border-radius: var(--r-1);
+  user-select: text; transition: border-color var(--t-fast), box-shadow var(--t-fast);
 }
-.field:focus { outline: none; border-color: var(--ink); }
+.field:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-faint); }
 textarea.field { height: auto; padding: 10px; resize: vertical; line-height: 1.6; }
+select.field { max-width: 100%; }
 
 /* Physical-looking switch: square-ish track with a sliding block. */
 .switch {
-  position: relative; width: 38px; height: 20px; flex: none;
-  border: 1px solid var(--rule-strong); border-radius: 2px; background: var(--paper-2);
-  transition: background .15s, border-color .15s;
+  position: relative; width: 36px; height: 20px; flex: none;
+  border: 1px solid var(--rule-strong); border-radius: var(--r-1); background: var(--paper-2);
+  transition: background var(--t-fast), border-color var(--t-fast);
 }
 .switch::after {
   content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
-  background: var(--ink-3); border-radius: 1px; transition: transform .15s, background .15s;
+  background: var(--ink-3); border-radius: var(--r-1); transition: transform var(--t-base) var(--ease-out), background var(--t-fast);
 }
 .switch.on { background: var(--ink); border-color: var(--ink); }
-.switch.on::after { transform: translateX(18px); background: var(--brand); }
+.switch.on::after { transform: translateX(16px); background: var(--accent); }
 
-.segmented { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: var(--r); overflow: hidden; }
+.segmented { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: var(--r-1); overflow: hidden; max-width: 100%; }
 .segmented button {
-  height: 30px; padding: 0 14px; border: 0; background: transparent; font-size: 13px; color: var(--ink-2);
+  height: 30px; padding: 0 12px; border: 0; background: transparent; font-size: 13px; color: var(--ink-2); white-space: nowrap;
+  transition: background var(--t-fast), color var(--t-fast);
 }
+.segmented button:hover { color: var(--ink); }
 .segmented button + button { border-left: 1px solid var(--rule-strong); }
 .segmented button.on { background: var(--ink); color: var(--paper); }
 
 .keycap {
-  display: inline-flex; align-items: center; height: 24px; padding: 0 8px;
-  font: 500 12px/1 var(--mono); letter-spacing: .02em;
-  border: 1px solid var(--rule-strong); border-bottom-width: 2px; border-radius: 3px;
-  background: var(--paper); color: var(--ink); white-space: nowrap;
+  display: inline-flex; align-items: center; height: 22px; padding: 0 7px; max-width: 100%;
+  font: 500 11px/1 var(--mono); letter-spacing: .02em;
+  border: 1px solid var(--rule-strong); border-bottom-width: 2px; border-radius: var(--r-1);
+  background: var(--paper); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .keys { display: inline-flex; gap: 4px; align-items: center; }
 
-.lamp { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
-.lamp.ok { background: var(--ok); }
-.lamp.busy { background: var(--amber); animation: blink 1s steps(2) infinite; }
-.lamp.err { background: var(--signal); }
+/* Status lamps: ink = ready, amber = working, vermilion = needs attention / live. */
+.lamp { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.lamp.ok { background: var(--ink); }
+.lamp.busy { background: var(--warn); animation: blink 1s steps(2) infinite; }
+.lamp.err { background: var(--accent); }
+.lamp.live { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: .3; } }
+@keyframes pulse { 50% { opacity: .35; } }
+@keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 .tag {
-  display: inline-block; padding: 1px 6px; border: 1px solid var(--rule-strong); border-radius: 2px;
-  font: 500 10px/1.5 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2);
+  display: inline-block; padding: 1px 6px; border: 1px solid var(--rule-strong); border-radius: var(--r-1);
+  font: 500 10.5px/1.5 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2);
 }
+.tag.accent { border-color: var(--accent); color: var(--accent); }
 
 .scroll { overflow-y: auto; }
 .scroll::-webkit-scrollbar { width: 10px; }
-.scroll::-webkit-scrollbar-thumb { background: var(--rule); border: 3px solid var(--paper); border-radius: 6px; }
-
-/* Calmer, app-like type: sentence-case labels instead of tracked mono capitals; softer corners. */
-.label { font: 600 12px/1.3 var(--sans); letter-spacing: 0; text-transform: none; color: var(--ink-3); }
-.btn, .field, .segmented { border-radius: 6px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--rule); border: 3px solid var(--paper); border-radius: var(--r-pill); }
 
 /* Icon buttons: the standard action button across the app. */
-.ibtn { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border: 1px solid var(--rule-strong); border-radius: 8px; background: var(--paper); color: var(--ink-2); font: 500 13px var(--sans); cursor: pointer; transition: background .12s, color .12s, border-color .12s; }
+.ibtn {
+  display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px;
+  border: 1px solid var(--rule-strong); border-radius: var(--r-1); background: var(--paper); color: var(--ink-2);
+  font: 500 13px var(--sans); white-space: nowrap; cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
 .ibtn:hover { color: var(--ink); border-color: var(--ink-3); background: var(--paper-2); }
 .ibtn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-.ibtn.primary:hover { opacity: .9; }
-.ibtn.danger:hover { color: var(--signal); border-color: var(--signal); background: var(--signal-soft); }
-.ibtn.round { width: 32px; padding: 0; justify-content: center; border-radius: 50%; }
+.ibtn.primary:hover { background: var(--ink-2); border-color: var(--ink-2); color: var(--paper); }
+.ibtn.accent { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.ibtn.danger:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-faint); }
+.ibtn.round { width: 32px; padding: 0; justify-content: center; border-radius: var(--r-pill); }
+.ibtn.ghost { border-color: transparent; background: transparent; }
 .ibtn:disabled { opacity: .45; cursor: default; }
+
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
-.meta-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; background: var(--paper-2); border: 1px solid var(--rule); font-size: 12.5px; color: var(--ink-2); }
+.meta-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: var(--r-1);
+  background: var(--paper-2); border: 1px solid var(--rule); font: 12px var(--mono); color: var(--ink-2);
+}
 .meta-chip svg { color: var(--ink-3); }
-.meta-chip.ok { color: var(--ok); border-color: var(--brand-soft); }
+.meta-chip.ok { color: var(--ink); border-color: var(--rule-strong); }
+
+/* Small floating menu (the ⋯ on a meeting). */
+.menu-wrap { position: relative; }
+.menu {
+  position: absolute; top: calc(100% + 6px); inset-inline-end: 0; z-index: 20; min-width: 190px; padding: 4px;
+  background: var(--paper); border-radius: var(--r-2); box-shadow: var(--shadow-float); animation: rise var(--t-base) var(--ease-out);
+}
+.menu button {
+  all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 9px; width: 100%; height: 32px; padding: 0 10px;
+  border-radius: var(--r-1); font-size: 13px; color: var(--ink); cursor: pointer;
+}
+.menu button svg { color: var(--ink-3); }
+.menu button:hover { background: var(--paper-2); }
+.menu button.danger:hover { color: var(--accent); background: var(--accent-faint); }
+.menu button.danger:hover svg { color: var(--accent); }
+.menu hr { border: 0; border-top: 1px solid var(--rule); margin: 4px 2px; }

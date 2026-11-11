@@ -4,7 +4,7 @@ import { emitLocal, inTauri, on } from "../lib/events";
 import Logo from "./Logo";
 import "./call.css";
 
-type Card = { state: "detected" | "recording" | "ended" | "hidden"; app: string };
+type Card = { state: "detected" | "starting" | "recording" | "ended" | "hidden"; app: string };
 
 /** How long each card stays before it goes away by itself (a detected call counts as "Not now"). */
 const LINGER: Record<string, number> = { detected: 45_000, recording: 5_000, ended: 8_000 };
@@ -12,6 +12,7 @@ const LINGER: Record<string, number> = { detected: 45_000, recording: 5_000, end
 /** The card in the bottom-right corner when a call starts or ends. */
 export default function Call() {
   const [card, setCard] = useState<Card>({ state: "hidden", app: "" });
+  const [err, setErr] = useState("");
 
   useEffect(() => {
     const un = on<Card>("call", setCard);
@@ -26,24 +27,47 @@ export default function Call() {
   }, [card]);
 
   if (card.state === "hidden") return <div className="call-card" />;
+  // "Microsoft Teams" reads as "Teams" on a card this small.
+  const app = card.app.replace(/^Microsoft\s+/i, "").trim();
+  const via = app ? ` · ${app}` : "";
   const text = {
-    detected: [`${card.app} call`, "Take notes with Seda?"],
-    recording: [`Taking notes · ${card.app}`, "Stops by itself when the call ends"],
+    detected: [app ? `${app} call started` : "Call started", "Take notes with Seda?"],
+    starting: [`Starting notes${via}`, "Opening the microphone…"],
+    recording: [`Taking notes${via}`, "Stops by itself when the call ends"],
     ended: ["Call ended", "Writing your notes…"],
   }[card.state];
 
+  const startNotes = () => {
+    const app = card.app;
+    // The mic takes a second or two. Change the card on this click so it doesn't feel missed.
+    setErr("");
+    setCard({ state: "starting", app });
+    api.callStart().then(
+      () => setCard((c) => (c.state === "starting" ? { state: "recording", app } : c)),
+      (e) => {
+        setErr(e instanceof Error ? e.message : String(e));
+        setCard((c) => (c.state === "starting" ? { state: "detected", app } : c));
+      },
+    );
+  };
+
   return (
     <div className={`call-card ${card.state}`}>
-      <Logo size={34} pulse={card.state === "recording"} outline={false} />
+      <Logo size={32} pulse={card.state === "recording" || card.state === "starting"} outline={false} />
       <div className="call-text">
         <b>{text[0]}</b>
-        <span>{text[1]}</span>
+        <span>{card.state === "detected" && err ? err : text[1]}</span>
       </div>
       <div className="call-acts">
         {card.state === "detected" ? (
           <>
-            <button className="primary" onClick={() => api.callStart()}>Start notes</button>
+            <button className="primary" onClick={startNotes}>Take notes</button>
             <button onClick={() => api.callDismiss()}>Not now</button>
+          </>
+        ) : card.state === "starting" ? (
+          <>
+            <button className="primary" disabled aria-busy="true">Starting…</button>
+            <button disabled aria-label="Close">✕</button>
           </>
         ) : (
           <>

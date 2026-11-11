@@ -30,7 +30,7 @@ export default function Vocabulary() {
 
   return (
     <>
-      <Head n="Words" title="Teach it your words">
+      <Head n="Words" title="Words">
         Names and terms Seda should always spell your way.
       </Head>
 
@@ -41,16 +41,21 @@ export default function Vocabulary() {
       </div>
       <div className="chips">
         {terms.map((t) => (
-          <span key={t} className="chip" dir="auto">
-            {t}
+          <span key={t} className="chip">
+            <span className="bidi-clip" dir="auto">{t}</span>
             <button aria-label={`Remove ${t}`} onClick={async () => { await api.vocabRemove(t); load(); }}>×</button>
           </span>
         ))}
-        {terms.length === 0 && <span className="faint">No words yet. Start with the names of people you work with.</span>}
+        {terms.length === 0 && (
+          <div className="empty compact">
+            <div className="big">No words yet</div>
+            Start with the people you work with.
+          </div>
+        )}
       </div>
 
-      <div className="group-label label">Learned fixes</div>
-      <p className="muted" style={{ margin: "0 0 4px", fontSize: 13 }}>
+      <div className="group-label">Learned fixes</div>
+      <p className="muted" style={{ margin: "10px 0 0", fontSize: 13 }}>
         Always replace one phrase with another. Seda adds these automatically when you correct a dictation in History.
       </p>
       <div className="add-row">
@@ -63,18 +68,23 @@ export default function Vocabulary() {
         <tbody>
           {fixes.map((f) => (
             <tr key={f.wrong}>
-              <td className="w" dir="auto">{f.wrong}</td>
-              <td className="arrow">→</td>
-              <td dir="auto">{f.right}</td>
-              <td className="mono faint" style={{ width: 90, fontSize: 12 }}>used {f.hits}×</td>
-              <td style={{ width: 70, textAlign: "end" }}>
+              <td><span className="bidi-clip w" dir="auto">{f.wrong}</span></td>
+              <td className="arrow" aria-label="becomes">→</td>
+              <td><span className="bidi-clip r" dir="auto">{f.right}</span></td>
+              <td className="uses">used {f.hits}×</td>
+              <td className="act">
                 <button className="btn ghost small" onClick={async () => { await api.fixRemove(f.wrong); load(); }}>Remove</button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
-      {fixes.length === 0 && <div className="empty" style={{ padding: 30 }}>No fixes yet.</div>}
+      {fixes.length === 0 && (
+        <div className="empty compact">
+          <div className="big">No fixes yet</div>
+          Correct a dictation in History and Seda remembers it.
+        </div>
+      )}
     </>
   );
 }

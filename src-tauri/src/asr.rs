@@ -104,11 +104,15 @@ impl Asr {
             self.decode(audio, language, vocab)?
         } else {
             let first = self.decode(audio, language, vocab)?;
-            if first.conf >= FALLBACK_BELOW || looping(&first.text) {
+            // A confident decode that is actually Persian can skip the second pass.
+            // English spoken into the Persian model is confident too, but it is not Persian
+            // (یس، فرسی): that one is decoded again as English.
+            let confident_persian = first.conf >= FALLBACK_BELOW && looks_like_persian(&first.text);
+            if confident_persian || looping(&first.text) {
                 first
             } else {
                 let en = self.decode(audio, "en", vocab)?;
-                if en.conf > first.conf { en } else { first }
+                prefer_english(first, en)
             }
         };
         if looping(&best.text) {
@@ -197,6 +201,55 @@ impl Asr {
     }
 }
 
+/// Real Persian, as opposed to English words spelled with Persian letters.
+/// A single short word is not enough: "آن" is both "that" and the English word "and".
+fn looks_like_persian(text: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "سلام", "ممنون", "متشکرم", "باشه", "باشد", "بله", "آره", "اره",
+        "هست", "هستم", "هستند", "است", "این", "برای", "ولی", "اگر", "باید",
+        "داریم", "داره", "دارد", "جلسه", "فردا", "دیروز", "الان", "حالا",
+        "چون", "چرا", "چطور", "کجا", "همین", "همان",
+    ];
+    let mut hits = 0usize;
+    let mut verb = false;
+    for word in text.split(|c: char| !c.is_alphanumeric() && c != '\u{200c}') {
+        if word.is_empty() {
+            continue;
+        }
+        if word.starts_with("می‌") || word.starts_with("نمی‌") || word.starts_with("نمی") || (word.starts_with("می") && word.chars().count() > 3) {
+            verb = true;
+        }
+        if MARKERS.contains(&word) {
+            hits += 1;
+        }
+    }
+    verb || hits >= 2
+}
+
+fn latin_fraction(text: &str) -> f32 {
+    let (mut latin, mut letters) = (0.0f32, 0.0f32);
+    for c in text.chars() {
+        if c.is_ascii_alphabetic() {
+            latin += 1.0;
+            letters += 1.0;
+        } else if ('\u{0600}'..='\u{06FF}').contains(&c) {
+            letters += 1.0;
+        }
+    }
+    if letters == 0.0 { 0.0 } else { latin / letters }
+}
+
+/// Keep the English decode when it came out in English letters and is about as sure.
+fn prefer_english(primary: Decoded, en: Decoded) -> Decoded {
+    if en.text.trim().is_empty() || looping(&en.text) || en.conf < KEEP_ABOVE {
+        return primary;
+    }
+    if latin_fraction(&en.text) >= 0.5 && en.conf + 0.12 >= primary.conf {
+        return en;
+    }
+    if en.conf > primary.conf { en } else { primary }
+}
+
 /// A decode stuck repeating itself ("... ... ...", the same word over and over): noise, not speech.
 fn looping(text: &str) -> bool {
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -248,4 +301,37 @@ pub struct Decoded {
     pub text: String,
     pub conf: f32,
     pub no_speech: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn heard(text: &str, conf: f32) -> Decoded {
+        Decoded { text: text.into(), conf, no_speech: 0.1 }
+    }
+
+    #[test]
+    fn english_spelled_in_persian_letters_is_not_persian() {
+        assert!(!looks_like_persian("یس یو کن آن"));
+        assert!(!looks_like_persian("فرسی"));
+    }
+
+    #[test]
+    fn real_persian_is_recognized() {
+        assert!(looks_like_persian("سلام فردا جلسه داریم"));
+        assert!(looks_like_persian("می‌رم خونه"));
+    }
+
+    #[test]
+    fn english_letters_win_when_the_scores_are_close() {
+        let picked = prefer_english(heard("یس یو کن", 0.93), heard("Yes, you can", 0.84));
+        assert_eq!(picked.text, "Yes, you can");
+    }
+
+    #[test]
+    fn a_sure_persian_sentence_stays_persian() {
+        let picked = prefer_english(heard("سلام جلسه داریم", 0.98), heard("hello", 0.70));
+        assert_eq!(picked.text, "سلام جلسه داریم");
+    }
 }

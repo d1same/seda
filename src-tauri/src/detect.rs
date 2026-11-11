@@ -81,9 +81,15 @@ fn mic_users() -> Vec<(String, bool)> {
             if n == "NonPackaged" {
                 continue;
             }
-            let start = qword(h, &n, "LastUsedTimeStart").unwrap_or(0);
-            let stop = qword(h, &n, "LastUsedTimeStop").unwrap_or(1);
-            out.push((n.to_lowercase(), start != 0 && stop == 0));
+            let start = qword(h, &n, "LastUsedTimeStart");
+            let stop = qword(h, &n, "LastUsedTimeStop");
+            // In use when this start is newer than the last stop. A stop of 0 means it has not let go.
+            let on = match (start, stop) {
+                (Some(start), Some(stop)) => start > stop,
+                (Some(start), None) => start != 0,
+                _ => false,
+            };
+            out.push((n.to_lowercase(), on));
         }
     };
     scan(root, subkeys(root));

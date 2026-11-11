@@ -16,6 +16,8 @@ import Call from "./views/Call";
 
 const view = new URLSearchParams(location.search).get("view");
 document.documentElement.classList.add(`view-${view ?? "main"}`);
+// Before the first paint: a dark color-scheme makes the icon's clear corners white.
+if (view === "pill") document.documentElement.style.setProperty("color-scheme", "only light", "important");
 const Root = view === "pill" ? Pill : view === "fix" ? Fix : view === "call" ? Call : Main;
 
 // No browser context menu or reload shortcuts in a desktop app.

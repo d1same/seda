@@ -83,7 +83,7 @@ export default function Fix() {
       <div className="fix-card">
         <header className="fix-head" data-tauri-drag-region>
           <div data-tauri-drag-region>
-            <div className="label" data-tauri-drag-region style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div className="kicker fix-kicker" data-tauri-drag-region>
               <Logo size={16} /> Seda · Fix my text
             </div>
             <div className="fix-title" data-tauri-drag-region>
@@ -129,7 +129,7 @@ export default function Fix() {
           <div className="spacer" />
           <button className="btn ghost" onClick={cancel}>Cancel <span className="keycap">Esc</span></button>
           <button className="btn" disabled={!result} onClick={() => result && navigator.clipboard.writeText(result)}>Copy</button>
-          <button className="btn signal" disabled={!result} onClick={accept}>Replace <span className="keycap dark">↵</span></button>
+          <button className="btn accent" disabled={!result} onClick={accept}>Replace <span className="keycap dark">↵</span></button>
         </footer>
       </div>
     </div>

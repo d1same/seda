@@ -34,6 +34,15 @@ pub struct Meeting {
     pub my_notes: String,
     /// JSON list of {role: "you"|"ai", text} — the Ask conversation.
     pub chat: String,
+    /// Other people from the Outlook appointment, joined with " | ".
+    #[serde(default)]
+    pub people: String,
+    /// Calendar subject, kept so a search still finds it after the notes rename the meeting.
+    #[serde(default)]
+    pub cal: String,
+    /// title + people + calendar subject + what was said. Filled for the list; empty on a single meeting.
+    #[serde(default)]
+    pub search: String,
     /// JSON: {"parts": [...], "until": secs}. The part notes behind the final notes, kept so a
     /// resumed meeting only needs notes for its new stretch.
     #[serde(skip)]
@@ -59,6 +68,8 @@ impl Store {
         let conn = Connection::open(crate::settings::data_dir().join("seda.db"))?;
         // Deleted dictations and meetings are overwritten in the file, not just unlinked.
         conn.execute_batch("PRAGMA secure_delete = ON;")?;
+        // A meeting checkpoint and a dictation may write at the same moment: wait, don't drop one.
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS history(
                 id INTEGER PRIMARY KEY, ts TEXT NOT NULL, app TEXT, style TEXT, raw TEXT, cleaned TEXT,
@@ -69,9 +80,12 @@ impl Store {
                 id INTEGER PRIMARY KEY, ts TEXT NOT NULL, secs REAL, title TEXT, transcript TEXT, notes TEXT);",
         )?;
         // Added after the first meetings release: older databases get the columns here.
-        for col in ["my_notes", "chat", "parts"] {
+        for col in ["my_notes", "chat", "parts", "people", "cal"] {
             let _ = conn.execute(&format!("ALTER TABLE meetings ADD COLUMN {col} TEXT DEFAULT ''"), []);
         }
+        // While the meeting is recording: the time (Unix seconds) of its last checkpoint; 0 when
+        // finished. A row whose checkpoints stopped more than a minute ago was left behind by a crash.
+        let _ = conn.execute("ALTER TABLE meetings ADD COLUMN live INTEGER DEFAULT 0", []);
         Ok(Self(Mutex::new(conn)))
     }
 
@@ -124,13 +138,39 @@ impl Store {
         learned
     }
 
-    pub fn add_meeting(&self, ts: &str, secs: f64, transcript: &str, my_notes: &str) -> i64 {
+    /// A meeting that just started (live until `set_meeting_live(id, false)`).
+    pub fn begin_meeting(&self, ts: &str) -> i64 {
         let c = self.0.lock();
         let _ = c.execute(
-            "INSERT INTO meetings(ts,secs,title,transcript,notes,my_notes,chat) VALUES(?,?,'',?,'',?,'[]')",
-            params![ts, secs, transcript, my_notes],
+            "INSERT INTO meetings(ts,secs,title,transcript,notes,my_notes,chat,live) VALUES(?,0,'','[]','','','[]',strftime('%s','now'))",
+            params![ts],
         );
         c.last_insert_rowid()
+    }
+
+    /// A resumed meeting records again.
+    pub fn set_meeting_live(&self, id: i64, live: bool) {
+        let sql = if live { "UPDATE meetings SET live=strftime('%s','now') WHERE id=?" } else { "UPDATE meetings SET live=0 WHERE id=?" };
+        let _ = self.0.lock().execute(sql, [id]);
+    }
+
+    /// Written every few seconds while recording, so a crash loses at most that much.
+    pub fn checkpoint_meeting(&self, id: i64, secs: f64, transcript: &str, my_notes: &str, parts: &str) {
+        let _ = self
+            .0
+            .lock()
+            .execute("UPDATE meetings SET secs=?, transcript=?, my_notes=?, parts=?, live=strftime('%s','now') WHERE id=?", params![secs, transcript, my_notes, parts, id]);
+    }
+
+    /// Meetings still marked as recording, with the seconds since their last checkpoint.
+    pub fn live_meetings(&self) -> Vec<(i64, i64)> {
+        let c = self.0.lock();
+        let mut st = c.prepare("SELECT id, strftime('%s','now') - live FROM meetings WHERE live > 0").unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(Result::ok).collect()
+    }
+
+    pub fn update_my_notes(&self, id: i64, my_notes: &str) {
+        let _ = self.0.lock().execute("UPDATE meetings SET my_notes=? WHERE id=?", params![my_notes, id]);
     }
 
     /// After resuming: the combined transcript, new length and notepad.
@@ -146,12 +186,24 @@ impl Store {
         let _ = self.0.lock().execute("UPDATE meetings SET title=?, notes=? WHERE id=?", params![title, notes, id]);
     }
 
+    pub fn set_meeting_meta(&self, id: i64, people: &str, cal: &str) {
+        let _ = self.0.lock().execute("UPDATE meetings SET people=?, cal=? WHERE id=?", params![people, cal, id]);
+    }
+
     /// Newest first. The list leaves out transcript and notes (they can be long).
     pub fn meetings(&self) -> Vec<Meeting> {
         let c = self.0.lock();
-        let mut st = c.prepare("SELECT id,ts,secs,title FROM meetings ORDER BY id DESC").unwrap();
+        let mut st = c.prepare("SELECT id,ts,secs,title,COALESCE(people,''),COALESCE(cal,''),COALESCE(transcript,'') FROM meetings WHERE COALESCE(live,0)=0 ORDER BY id DESC").unwrap();
         st.query_map([], |r| {
-            Ok(Meeting { id: r.get(0)?, ts: r.get(1)?, secs: r.get(2)?, title: r.get(3)?, transcript: String::new(), notes: String::new(), my_notes: String::new(), chat: String::new(), parts: String::new() })
+            let title: String = r.get(3)?;
+            let people: String = r.get(4)?;
+            let cal: String = r.get(5)?;
+            let transcript: String = r.get(6)?;
+            let search = crate::smart::meeting_haystack(&title, &people, &cal, &transcript);
+            Ok(Meeting {
+                id: r.get(0)?, ts: r.get(1)?, secs: r.get(2)?, title, transcript: String::new(), notes: String::new(),
+                my_notes: String::new(), chat: String::new(), parts: String::new(), people, cal, search,
+            })
         })
         .unwrap()
         .filter_map(Result::ok)
@@ -161,10 +213,10 @@ impl Store {
     pub fn meeting(&self, id: i64) -> Option<Meeting> {
         self.0
             .lock()
-            .query_row("SELECT id,ts,secs,title,transcript,notes,COALESCE(my_notes,''),COALESCE(chat,'[]'),COALESCE(parts,'') FROM meetings WHERE id=?", [id], |r| {
+            .query_row("SELECT id,ts,secs,title,transcript,notes,COALESCE(my_notes,''),COALESCE(chat,'[]'),COALESCE(parts,''),COALESCE(people,''),COALESCE(cal,'') FROM meetings WHERE id=?", [id], |r| {
                 Ok(Meeting {
                     id: r.get(0)?, ts: r.get(1)?, secs: r.get(2)?, title: r.get(3)?, transcript: r.get(4)?, notes: r.get(5)?,
-                    my_notes: r.get(6)?, chat: r.get(7)?, parts: r.get(8)?,
+                    my_notes: r.get(6)?, chat: r.get(7)?, parts: r.get(8)?, people: r.get(9)?, cal: r.get(10)?, search: String::new(),
                 })
             })
             .ok()
