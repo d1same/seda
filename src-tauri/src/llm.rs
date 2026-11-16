@@ -1,5 +1,6 @@
 //! Local text AI: runs llama-server (Vulkan) with Gemma 4 E4B as a hidden child process.
 //! Prompts are the ones that scored 11.5/12 in the bake-off (bakeoff/llm/prompts.py).
+use crate::templates::{self, Kind, Shape, Template};
 use anyhow::{Result, anyhow};
 use serde_json::json;
 use std::os::windows::process::CommandExt;
@@ -171,6 +172,69 @@ const MEETING_MERGE: &str = "You get the notes of consecutive parts of one meeti
   - <supporting detail>
 Merge sections about the same subject into ONE section. Keep every troubleshooting step and the result. At most {N} topic sections besides Problem, What we tried, and Solution. Write ONLY the title and topic sections: do NOT write Problem, What we tried, Solution, Decisions, Next steps, or Open questions (they are added separately).
 {RULES}";
+/// Appended to Auto's instructions when the user chose the troubleshooting ticket template.
+const FORCE_TICKET: &str = "\n\nThe user chose the troubleshooting ticket template for this meeting. Treat it as a troubleshooting call even if the problem was small: write ## Problem, ## What we tried and ## Solution, in that order, before anything else.";
+
+/// Single pass with a template: the template's sections are the skeleton.
+const MEETING_T: &str = "You are an excellent note-taker. Turn this meeting transcript (lines start with [mm:ss] and the speaker) into clear notes. This meeting is: {ABOUT}
+Output Markdown only, with exactly these sections, in this order:
+# <a specific title naming the outcome, 4-9 words>
+{SECTIONS}
+Write each \"## \" heading exactly as given above, without the text after \"—\". That text only tells you what belongs in the section; never copy it into the notes.
+Under each heading write \"- \" bullets with what the meeting said about it. Put every important point under the section where it fits best. Leave out a section when the meeting has nothing for it: no empty headings, and never \"None\".
+{RULES}";
+
+/// Long meeting with a template: the model writes only the sections the code does not place.
+const MEETING_MERGE_T: &str = "You get the notes of consecutive parts of one meeting, in order, including a call that was resumed. This meeting is: {ABOUT}
+Combine them into one set of notes. Output Markdown only, with exactly these sections, in this order:
+# <a specific title naming the outcome, 4-9 words>
+{SECTIONS}
+Write each \"## \" heading exactly as given above, without the text after \"—\". That text only tells you what belongs in the section; never copy it into the notes.
+Under each heading write \"- \" bullets. Merge points about the same subject into one bullet with sub-bullets. Keep every specific fact, step and result from the parts. Leave out a section when the parts have nothing for it.
+Do NOT write these sections: {SKIP}. They are added separately.
+{RULES}";
+
+/// Long meeting with a template whose parts don't fit one request: groups of parts first.
+const MEETING_CONDENSE: &str = "You get the notes of consecutive parts of one meeting, in order. Combine them into one shorter set of notes that keeps every specific fact. Output Markdown only:
+## <topic>
+- <specific point>
+  - <supporting detail>
+Merge sections about the same subject into ONE section, at most 6 sections. Keep every step that was tried and its result, and every number, name and date. Do NOT write these sections: {SKIP}. They are added separately. Do not write a title.
+{RULES}";
+
+/// NOTE_RULES for the template path: the content rules, without the ticket detection, the topic
+/// rule and the ticket examples, which would pull the model away from the template.
+const TEMPLATE_RULES: &str = "Rules:
+- Read the whole transcript, especially the end. The result of the call is usually in the last minute.
+- Write the fact, not the conversation. \"Restarting the phone fixed the dial tone.\" Never \"the user said\", \"the user noted\", \"they attempted\" or \"they confirmed\".
+- Skip greetings, hold music, small talk and repeated mishears.
+- Be specific: names, numbers, versions, dates, decisions. Never \"participants discussed issues\".
+- A detail that only supports one fact is an indented sub-bullet (two spaces, then \"- \").
+- Next steps are work still NOT done when the call ends: a bold imperative with the owner in parentheses, **Check the router** (Sam). Every open commitment counts (\"I'll send the photo\", \"Sam, can you …\"). Never list something already finished, and never list chatter (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
+- Leave out an open question that is already a next step.
+- Never invent anything that was not said. Do not guess a verdict, a price or a date.
+- \"You\" in the transcript is the user; \"Them\" is the other people. Speech recognition mishears words: write the meaning, or leave the word out. Never keep the bad word with a guess in parentheses.
+- Each point stays in the language it was spoken. Do not translate the meeting into one language. English stays English even when Persian is also spoken. English written in Persian letters (یس، فرسی) is English: write it in English letters.
+- Section headings stay exactly as given, in the language they are given in, even when the bullets under them are in another language.
+Shape to copy (for the sections Updates, Blockers, Next steps):
+# Q3 report is ready, launch slips a week
+## Updates
+- The Q3 report is finished and sent to finance
+- Launch moves from 14 to 21 November
+  - The payment provider's review takes five more working days
+## Blockers
+- The staging server is still down, so nobody can test the new login
+## Next steps
+- **Ask IT for a new staging server by Monday** (Sam)";
+
+/// The standard section lines a template gets when it has no section of that kind.
+const STANDARD_LINES: [(Kind, &str, &str); 3] = [
+    (Kind::Decisions, "Decisions", "only if decisions were made"),
+    (Kind::NextSteps, "Next steps", "**<imperative task>** (<who>), only work still not done"),
+    (Kind::OpenQuestions, "Open questions", "only questions left unanswered"),
+];
+const OTHER_NOTES_LINE: &str = "## Other notes — anything important that fits none of the sections above";
+
 /// The model sometimes writes "## Open questions" followed by just "None". Remove such sections.
 pub fn drop_empty_sections(md: &str) -> String {
     let empty = |l: &str| {
@@ -200,6 +264,16 @@ pub fn drop_empty_sections(md: &str) -> String {
 const ASK: &str = "You are Seda's meeting assistant. Below are the notes and the transcript of one meeting (\"You\" is the user, \"Them\" the other people; the transcript comes from speech recognition and has some wrong words).
 Answer the user's questions about this meeting: short and direct, in the language they ask in, using only what is in the notes and transcript. If it isn't there, say so.
 If the user asks you to change, add to, shorten, translate or rewrite the notes, reply with one short sentence saying what you changed, then the COMPLETE updated notes in Markdown (first line \"# <title>\") between <notes> and </notes>. Never invent facts.";
+
+/// Ask across meetings, from the Meetings list.
+const ASK_ALL: &str = "You are Seda's meeting assistant. Below are excerpts from several of the user's meetings: for each one its notes and the most relevant transcript lines (\"You\" is the user, \"Them\" the other people; transcripts come from speech recognition and have some wrong words). Each meeting starts with a line like \"### [2] Title | date | people\".
+Answer the user's question using only these excerpts. Be short and direct: one or two sentences, or a few \"- \" bullets. Answer in the language of the question.
+After every fact, cite the meeting it comes from with its number in square brackets, like [2]. If two meetings support it, write [1][3]. Use only numbers that appear below. Do not write a title or a date as the citation.
+When meetings disagree, say what changed and cite both, oldest first. Today is {TODAY}.
+If the excerpts do not answer the question, say in one sentence that you couldn't find it in these meetings, and nothing else. Never invent facts, names, dates or numbers. You cannot change notes here.";
+
+/// Search keywords in both languages, so an English question can find a Persian meeting.
+const KEYWORDS: &str = "You help search a user's meeting notes. From the question, list up to 8 search keywords: the important nouns, names and technical terms. Give each keyword in English and in Persian (Farsi). Output one line only: the keywords separated by commas. No verbs, no explanations, no numbering.";
 
 /// Tells the AI who "You" is, so "Alex, can you send…" becomes Alex's task.
 fn who_is_you(user: &str) -> String {
@@ -392,6 +466,25 @@ impl Llm {
         self.chat_messages(messages, 1800, Duration::from_secs(300))
     }
 
+    /// One turn of the Ask bar on the Meetings list. `context` holds numbered excerpts of several
+    /// meetings; the answer cites them as [n]. `today` is "Monday, 16 November 2026".
+    pub fn ask_meetings(&mut self, context: &str, history: &[(String, String)], question: &str, user: &str, today: &str) -> Result<String> {
+        let system = format!("{}{}\n\n{context}", ASK_ALL.replace("{TODAY}", today), who_is_you(user));
+        let mut messages = vec![json!({"role": "system", "content": system})];
+        for (role, text) in history.iter().rev().take(4).rev() {
+            let text: String = text.chars().take(600).collect();
+            messages.push(json!({"role": if role == "you" { "user" } else { "assistant" }, "content": text}));
+        }
+        let hint = if question.is_ascii() { "Answer in English." } else { "Reply in the same language as this message." };
+        messages.push(json!({"role": "user", "content": format!("{question}\n\n({hint})")}));
+        self.chat_messages(messages, 900, Duration::from_secs(300))
+    }
+
+    /// Search keywords for a question, in English and Persian, comma-separated on one line.
+    pub fn search_keywords(&mut self, question: &str) -> Result<String> {
+        self.chat_with(KEYWORDS, question, 60, Duration::from_secs(20))
+    }
+
     /// Shared instructions for meeting notes: language, who "You" is, the user's own notes.
     fn meeting_extra(language: Option<&str>, user: &str, has_mine: bool) -> String {
         let mut s = language.map(|l| format!("\n\nMost of the transcript is {l}. Still write each point in the language it was spoken. Do not translate English into Persian or Persian into English.")).unwrap_or_default();
@@ -402,40 +495,81 @@ impl Llm {
         s
     }
 
+    /// The same instructions for the template path: the user's notepad lines are kept, but the
+    /// template's sections are the skeleton.
+    fn meeting_extra_t(language: Option<&str>, user: &str, has_mine: bool) -> String {
+        let mut s = language.map(|l| format!("\n\nMost of the transcript is {l}. Still write each point in the language it was spoken. Do not translate English into Persian or Persian into English.")).unwrap_or_default();
+        s.push_str(&who_is_you(user));
+        if has_mine {
+            s.push_str(MY_NOTES_RULE_T);
+        }
+        s
+    }
+
     /// How many topic sections fit the meeting: about one per 5 minutes, 3 to 10.
     fn summary_bullets(minutes: u32) -> String {
         (minutes / 5).clamp(3, 10).to_string()
     }
 
-    /// Notes for a short meeting in one pass.
-    pub fn meeting_single(&mut self, transcript: &str, language: Option<&str>, my_notes: &str, user: &str, minutes: u32) -> Result<String> {
+    /// The system prompt of the single pass. Auto is exactly the 0.3.0 prompt.
+    fn single_system(t: &Template, language: Option<&str>, user: &str, has_mine: bool, minutes: u32) -> String {
+        let auto = || format!("{}{}", MEETING.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, has_mine));
+        match templates::shape(t) {
+            Shape::Auto => auto(),
+            Shape::Ticket => format!("{}{FORCE_TICKET}", auto()),
+            Shape::Sections(t) => format!(
+                "{}{}",
+                fill(MEETING_T, &[("{RULES}", TEMPLATE_RULES), ("{ABOUT}", &about(t)), ("{SECTIONS}", &single_sections(t))]),
+                Self::meeting_extra_t(language, user, has_mine)
+            ),
+        }
+    }
+
+    /// The system prompt of the final merge for Auto and Ticket (exactly the 0.3.0 prompt).
+    fn merge_system(language: Option<&str>, user: &str, has_mine: bool, minutes: u32) -> String {
+        format!("{}{}", MEETING_MERGE.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, has_mine))
+    }
+
+    /// The group prompt when the parts of a long Auto meeting don't fit one request.
+    fn mid_system(language: Option<&str>, user: &str) -> String {
+        let mid = MEETING_MERGE.replace("{N}", "6").replace("{RULES}", NOTE_RULES);
+        format!("{mid}{}", Self::meeting_extra(language, user, false))
+    }
+
+    fn part_system(language: Option<&str>, user: &str) -> String {
+        format!("{}{}", MEETING_PART.replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, false))
+    }
+
+    /// Notes for a short meeting in one pass, in the shape of the meeting's template.
+    pub fn meeting_single(&mut self, transcript: &str, language: Option<&str>, my_notes: &str, user: &str, minutes: u32, t: &Template) -> Result<String> {
         let mine = my_notes.trim();
-        let system = format!("{}{}", MEETING.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, !mine.is_empty()));
-        let body = if mine.is_empty() { transcript.to_string() } else { format!("My own notes:\n{mine}\n\n---\n\n{transcript}") };
-        Ok(drop_empty_sections(&self.chat_with(&system, &body, 1800, Duration::from_secs(600))?))
+        let system = Self::single_system(t, language, user, !mine.is_empty(), minutes);
+        match templates::shape(t) {
+            Shape::Sections(t) => {
+                // The notepad counts against the context: a very long one is kept to its start.
+                let capped: String = mine.chars().take(4_000).collect();
+                let out = self.chat_with(&system, &notes_body(&capped, transcript), 1800, Duration::from_secs(600))?;
+                Ok(templates::keep_my_lines(templates::assemble(t, &out, &[]), mine))
+            }
+            _ => Ok(drop_empty_sections(&self.chat_with(&system, &notes_body(mine, transcript), 1800, Duration::from_secs(600))?)),
+        }
     }
 
     /// Detailed notes for one ~10-minute stretch of a long meeting (written while it is still going).
+    /// Never depends on the template, so a template chosen later only redoes the merge.
     pub fn meeting_part(&mut self, transcript: &str, language: Option<&str>, user: &str) -> Result<String> {
-        let system = format!("{}{}", MEETING_PART.replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, false));
+        let system = Self::part_system(language, user);
         self.chat_with(&system, transcript, 1200, Duration::from_secs(600))
     }
 
-    /// Final notes from the part notes of a long meeting. The AI only writes the title and topics;
-    /// decisions, next steps and open questions are collected from the parts by code, so the merge
-    /// can never drop one (a small model rewriting everything at once loses items).
-    pub fn meeting_merge(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, minutes: u32) -> Result<String> {
-        let mine = my_notes.trim();
-        let system = format!("{}{}", MEETING_MERGE.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, !mine.is_empty()));
-        let mut topics_only: Vec<String> = parts.iter().map(|p| strip_sections(p, &LIST_SECTIONS)).collect();
-        let join = |t: &[String]| t.iter().enumerate().map(|(i, p)| format!("### Part {}\n{p}", i + 1)).collect::<Vec<_>>().join("\n\n");
-        // A long meeting's parts don't fit in one request: merge them in groups first, then merge
-        // those (as often as needed). Decisions, next steps etc. still come from the original parts below.
-        while join(&topics_only).chars().count() > MERGE_BUDGET && topics_only.len() > 1 {
+    /// A long meeting's parts don't fit in one request: merge them in groups first with `prompt`,
+    /// then merge those (as often as needed). `strip`: the sections the code collects itself.
+    fn merge_groups(&mut self, mut topics: Vec<String>, prompt: &str, strip: &[&str]) -> Result<Vec<String>> {
+        while join_parts(&topics).chars().count() > MERGE_BUDGET && topics.len() > 1 {
             let mut groups: Vec<Vec<String>> = vec![Vec::new()];
-            for t in topics_only {
+            for t in topics {
                 let last = groups.last_mut().unwrap();
-                if !last.is_empty() && join(last).chars().count() + t.chars().count() + 16 > MERGE_BUDGET {
+                if !last.is_empty() && join_parts(last).chars().count() + t.chars().count() + 16 > MERGE_BUDGET {
                     groups.push(vec![t]);
                 } else {
                     last.push(t);
@@ -446,25 +580,39 @@ impl Llm {
                 groups = groups.into_iter().flatten().collect::<Vec<_>>().chunks(2).map(|c| c.to_vec()).collect();
             }
             crate::log::log(format!("meeting notes: merging in {} groups first", groups.len()));
-            let mid = MEETING_MERGE.replace("{N}", "6").replace("{RULES}", NOTE_RULES);
-            let mid = format!("{mid}{}", Self::meeting_extra(language, user, false));
             let mut next = Vec::new();
             for g in groups {
                 if g.len() == 1 {
                     next.extend(g);
                     continue;
                 }
-                let merged = self.chat_with(&mid, &join(&g), 1500, Duration::from_secs(600))?;
+                let merged = self.chat_with(prompt, &join_parts(&g), 1500, Duration::from_secs(600))?;
                 // The group's own title line would read as a topic in the next round.
                 let merged: String = merged.lines().filter(|l| !l.starts_with("# ")).collect::<Vec<_>>().join("\n");
-                next.push(strip_sections(&merged, &LIST_SECTIONS));
+                next.push(strip_sections(&merged, strip));
             }
-            topics_only = next;
+            topics = next;
         }
-        let joined = join(&topics_only);
+        Ok(topics)
+    }
+
+    /// Final notes from the part notes of a long meeting. The AI only writes the title and topics
+    /// (or the template's own sections); decisions, next steps and open questions are collected
+    /// from the parts by code, so the merge can never drop one (a small model rewriting everything
+    /// at once loses items).
+    pub fn meeting_merge(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, minutes: u32, t: &Template) -> Result<String> {
+        if let Shape::Sections(t) = templates::shape(t) {
+            return self.meeting_merge_t(parts, language, my_notes, user, t);
+        }
+        let mine = my_notes.trim();
+        let system = Self::merge_system(language, user, !mine.is_empty(), minutes);
+        let topics_only: Vec<String> = parts.iter().map(|p| strip_sections(p, &LIST_SECTIONS)).collect();
+        // Decisions, next steps etc. still come from the original parts below.
+        let topics_only = self.merge_groups(topics_only, &Self::mid_system(language, user), &LIST_SECTIONS)?;
+        let joined = join_parts(&topics_only);
         // The notepad also counts against the context: keep a very long one to its start.
         let mine: String = mine.chars().take(4_000).collect();
-        let body = if mine.is_empty() { joined } else { format!("My own notes:\n{mine}\n\n---\n\n{joined}") };
+        let body = notes_body(&mine, &joined);
         let mut notes = strip_sections(&self.chat_with(&system, &body, 1500, Duration::from_secs(600))?, &LIST_SECTIONS);
         // Steps and the fix are copied from the parts, so a merge cannot turn a finished fix into a to-do.
         let mut ticket = String::new();
@@ -485,6 +633,96 @@ impl Llm {
         }
         Ok(drop_empty_sections(notes.trim()))
     }
+
+    /// The long path with a template: the model writes the template's own sections from the parts
+    /// without the sections the code places; then `assemble` puts everything in the template's order.
+    fn meeting_merge_t(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, t: &Template) -> Result<String> {
+        let mine = my_notes.trim();
+        let strip: Vec<&str> = templates::placed_kinds(t).into_iter().flat_map(|k| templates::aliases(k).iter().copied()).collect();
+        let skip = templates::placed_headings(t).join(", ");
+        let condense = format!("{}{}", fill(MEETING_CONDENSE, &[("{RULES}", TEMPLATE_RULES), ("{SKIP}", &skip)]), Self::meeting_extra_t(language, user, false));
+        let topics: Vec<String> = parts.iter().map(|p| strip_sections(p, &strip)).collect();
+        let topics = self.merge_groups(topics, &condense, &strip)?;
+        let system = format!(
+            "{}{}",
+            fill(MEETING_MERGE_T, &[("{RULES}", TEMPLATE_RULES), ("{SKIP}", &skip), ("{ABOUT}", &about(t)), ("{SECTIONS}", &merge_sections(t))]),
+            Self::meeting_extra_t(language, user, !mine.is_empty())
+        );
+        let capped: String = mine.chars().take(4_000).collect();
+        let out = self.chat_with(&system, &notes_body(&capped, &join_parts(&topics)), 1500, Duration::from_secs(600))?;
+        Ok(templates::keep_my_lines(templates::assemble(t, &out, parts), mine))
+    }
+}
+
+/// Placeholders filled in one pass: text from the user's template (which may itself contain
+/// "{SECTIONS}") is never expanded again.
+fn fill(prompt: &str, values: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(prompt.len());
+    let mut rest = prompt;
+    while let Some(at) = rest.find('{') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        match values.iter().find(|(k, _)| rest.starts_with(k)) {
+            Some((k, v)) => {
+                out.push_str(v);
+                rest = &rest[k.len()..];
+            }
+            None => {
+                out.push('{');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The user message for meeting notes: the notepad first, when there is one.
+fn notes_body(mine: &str, rest: &str) -> String {
+    if mine.is_empty() { rest.to_string() } else { format!("My own notes:\n{mine}\n\n---\n\n{rest}") }
+}
+
+/// Part notes as one request: "### Part N" before each.
+fn join_parts(t: &[String]) -> String {
+    t.iter().enumerate().map(|(i, p)| format!("### Part {}\n{p}", i + 1)).collect::<Vec<_>>().join("\n\n")
+}
+
+/// "This meeting is: …" for a template.
+fn about(t: &Template) -> String {
+    if t.about.trim().is_empty() { format!("a \"{}\" meeting.", t.name) } else { t.about.trim().to_string() }
+}
+
+/// One "## Heading — hint" line per section.
+fn section_line(heading: &str, hint: &str) -> String {
+    if hint.trim().is_empty() { format!("## {heading}") } else { format!("## {heading} — {}", hint.trim()) }
+}
+
+/// The section lines of `MEETING_T`: the template's sections (a list section without a hint gets
+/// the standard one), the standard list sections it lacks, then Other notes.
+fn single_sections(t: &Template) -> String {
+    let mut lines: Vec<String> = t
+        .sections
+        .iter()
+        .map(|s| {
+            let kind = templates::kind_of(&s.heading);
+            let standard = STANDARD_LINES.iter().find(|(k, _, _)| Some(*k) == kind).map(|(_, _, h)| *h).unwrap_or("");
+            section_line(&s.heading, if s.hint.trim().is_empty() { standard } else { &s.hint })
+        })
+        .collect();
+    for (kind, heading, hint) in STANDARD_LINES {
+        if !t.sections.iter().any(|s| templates::kind_of(&s.heading) == Some(kind)) {
+            lines.push(section_line(heading, hint));
+        }
+    }
+    lines.push(OTHER_NOTES_LINE.to_string());
+    lines.join("\n")
+}
+
+/// The section lines of `MEETING_MERGE_T`: only the sections the model writes.
+fn merge_sections(t: &Template) -> String {
+    let mut lines: Vec<String> = t.sections.iter().filter(|s| templates::kind_of(&s.heading).is_none()).map(|s| section_line(&s.heading, &s.hint)).collect();
+    lines.push(OTHER_NOTES_LINE.to_string());
+    lines.join("\n")
 }
 
 /// Most part-note text sent in one merge request (characters). Leaves room in the 16k-token context
@@ -494,6 +732,10 @@ const MERGE_BUDGET: usize = 9_000;
 /// Granola-style notes: what the user typed is the skeleton and stays in their words. The window
 /// shows the user's lines in ink and the AI's additions in gray by matching them, so they must
 /// survive verbatim.
+/// On the template path the template's sections are the skeleton; the user's lines are still kept
+/// verbatim, each under the section where it fits.
+const MY_NOTES_RULE_T: &str = "\n\nThe user typed their own notes during the meeting (given first, under 'My own notes'). Copy each of their lines into your notes exactly as written (fix typos only), as a bullet under the section where it fits best, before the bullets you add. Their headings are not sections here: only the sections listed above are. A line of theirs that fits no section goes under '## Other notes'. Never drop or reword one of their lines.";
+
 const MY_NOTES_RULE: &str = "\n\nThe user typed their own notes during the meeting (given first, under 'My own notes'). They are the skeleton of your notes: keep their headings ('#' or '##' lines) as ## sections, in their order. Copy each of their bullet lines exactly as written (fix typos only). Under each of their headings add the details from the meeting as more bullets. Topics they did not write about go after their sections. Never drop or reword one of their lines.";
 
 /// Sections gathered from the part notes, so the merge cannot drop the fix or a leftover task.
@@ -531,7 +773,7 @@ fn strip_sections(md: &str, names: &[&str]) -> String {
 }
 
 /// Every bullet under the given section names across all parts, in order, without duplicates.
-fn collect_items(parts: &[String], names: &[&str]) -> Vec<String> {
+pub(crate) fn collect_items(parts: &[String], names: &[&str]) -> Vec<String> {
     let norm = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
     let mut seen = std::collections::HashSet::new();
     let mut items = Vec::new();
@@ -549,3 +791,90 @@ fn collect_items(parts: &[String], names: &[&str]) -> Vec<String> {
         }
     }
     items}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn digest(parts: &[String]) -> String {
+        let mut h = Sha256::new();
+        for p in parts {
+            h.update(p.as_bytes());
+            h.update([0u8]);
+        }
+        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Auto must not move: every prompt it builds is byte for byte the 0.3.0 one. The digests were
+    /// taken from the 0.3.0 code (26f42ed) with the same loops, before any change to this file.
+    #[test]
+    fn auto_prompts_are_byte_for_byte_0_3_0() {
+        let auto = templates::resolve(&[], "auto");
+        let unknown = templates::resolve(&[], "c_removed");
+        let (mut single, mut single_unknown, mut merge, mut mid, mut part, mut body) = (vec![], vec![], vec![], vec![], vec![], vec![]);
+        for language in [None, Some("Persian")] {
+            for user in ["", "Sam"] {
+                for mine in ["", "- ask Sam about Q3"] {
+                    for minutes in [7u32, 30, 80] {
+                        single.push(Llm::single_system(&auto, language, user, !mine.is_empty(), minutes));
+                        single_unknown.push(Llm::single_system(&unknown, language, user, !mine.is_empty(), minutes));
+                        merge.push(Llm::merge_system(language, user, !mine.is_empty(), minutes));
+                    }
+                    mid.push(Llm::mid_system(language, user));
+                    part.push(Llm::part_system(language, user));
+                    body.push(notes_body(mine, "[00:01] Them: hello"));
+                }
+            }
+        }
+        let frozen = "0ccf8eb1c8342e3890f8bf3b001999b4666acf282a0dc586a7a55f1a78a30dd6";
+        assert_eq!(digest(&single), frozen);
+        assert_eq!(single.iter().map(|s| s.len()).sum::<usize>(), 102464);
+        assert_eq!(digest(&single_unknown), frozen, "a removed template reads as Auto");
+        assert_eq!(digest(&merge), "92051e17b4b891e65c55fa783dce1197c907128fde3c5402459c71c5833dc236");
+        assert_eq!(digest(&mid), "ef29f7899b0052f4b7a4e6cc64589b71a23dbbb704e2243632e7ed2098c1e24b");
+        assert_eq!(digest(&part), "55a510c3e635829efd8ab4561d7393d826925aa0077865b0a29c39bd6bc3bfe5");
+        assert_eq!(digest(&body), "49b6887b332dd389408bc2ca29ea3de5a17fa0c72895c3c47856b9dc8ee6b62c");
+    }
+
+    #[test]
+    fn ticket_is_auto_plus_one_paragraph() {
+        let auto = templates::resolve(&[], "auto");
+        let ticket = templates::resolve(&[], "ticket");
+        let a = Llm::single_system(&auto, None, "Sam", true, 30);
+        let t = Llm::single_system(&ticket, None, "Sam", true, 30);
+        assert_eq!(t, format!("{a}{FORCE_TICKET}"));
+    }
+
+    #[test]
+    fn template_prompts() {
+        let one = templates::resolve(&[], "one_on_one");
+        let p = Llm::single_system(&one, Some("Persian"), "Sam", true, 30);
+        assert!(p.contains("This meeting is: A one-to-one between the user and one other person.\n"));
+        assert!(p.contains("## Updates — what each person reported since last time: progress, results, numbers\n## Feedback"));
+        assert!(p.contains("## Decisions — only if decisions were made\n## Next steps — **<imperative task>** (<who>), only work still not done\n## Open questions — only questions left unanswered\n## Other notes — anything important"));
+        assert!(p.contains(MY_NOTES_RULE_T) && !p.contains(MY_NOTES_RULE));
+        assert!(p.contains(TEMPLATE_RULES) && !p.contains("Shape to copy when the call fixes something"));
+        assert!(!p.contains("{"), "no placeholder left");
+        // A custom template without "about": its name. Merge lists only the model's sections.
+        let custom = Template {
+            id: "c_standup".into(),
+            name: "Stand-up".into(),
+            about: String::new(),
+            sections: vec![
+                templates::Section { heading: "Done".into(), hint: "finished since last time".into() },
+                templates::Section { heading: "Next steps".into(), hint: String::new() },
+            ],
+        };
+        let s = single_sections(&custom);
+        assert_eq!(s, "## Done — finished since last time\n## Next steps — **<imperative task>** (<who>), only work still not done\n## Decisions — only if decisions were made\n## Open questions — only questions left unanswered\n## Other notes — anything important that fits none of the sections above");
+        assert_eq!(about(&custom), "a \"Stand-up\" meeting.");
+        assert_eq!(merge_sections(&custom), "## Done — finished since last time\n## Other notes — anything important that fits none of the sections above");
+        assert_eq!(templates::placed_headings(&custom).join(", "), "Next steps, Decisions, Open questions");
+        // A user's text is never expanded again.
+        let mut sneaky = custom.clone();
+        sneaky.about = "Says {SECTIONS} and {RULES}".into();
+        let p = Llm::single_system(&sneaky, None, "", false, 10);
+        assert!(p.contains("This meeting is: Says {SECTIONS} and {RULES}\n"));
+    }
+}

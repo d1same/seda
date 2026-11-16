@@ -242,3 +242,19 @@
 .mrow.picked, .hrow.picked .hrow-line { background: var(--paper-2); }
 .mrow .faint { margin-inline-start: auto; }
 .hrow-line.picking { grid-template-columns: 16px 64px 72px minmax(0, 1fr) auto; }
+
+/* ---------- settings: note templates, export ---------- */
+.tpl-editor { display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0; }
+.tpl-empty { font-size: 13px; padding: 4px 0; }
+.tpl-row { display: flex; align-items: center; gap: 4px; min-height: 40px; border-bottom: 1px solid var(--rule); }
+.tpl-row.on { background: var(--paper-2); margin: 0 -8px; padding: 0 8px; border-radius: var(--r-1); }
+.tpl-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.tpl-row-name { font-size: 13.5px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpl-row-secs { font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpl-form { display: flex; flex-direction: column; gap: 10px; padding: 12px 0 4px; }
+.tpl-field { display: flex; flex-direction: column; gap: 5px; }
+.tpl-sections { min-height: 132px; font-size: 13.5px; }
+.tpl-help { margin: 0; font-size: 12px; line-height: 1.5; color: var(--ink-3); }
+.tpl-actions { display: flex; gap: 8px; }
+.path-inline { font-family: var(--mono); font-size: 12px; unicode-bidi: isolate; overflow-wrap: anywhere; }
+.row .ctl .ctl-line { flex-basis: 100%; margin-top: 0; }

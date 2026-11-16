@@ -225,3 +225,10 @@ select.field { max-width: 100%; }
 .menu button.danger:hover { color: var(--accent); background: var(--accent-faint); }
 .menu button.danger:hover svg { color: var(--accent); }
 .menu hr { border: 0; border-top: 1px solid var(--rule); margin: 4px 2px; }
+.menu.start { inset-inline-end: auto; inset-inline-start: 0; }
+.menu.up { top: auto; bottom: calc(100% + 6px); }
+.menu .kicker { display: block; padding: 8px 10px 6px; }
+.menu button .tick { margin-inline-start: auto; color: var(--ink); }
+.menu button .tick svg { color: inherit; }
+.menu button:focus-visible { outline: none; background: var(--paper-2); box-shadow: inset 0 0 0 1px var(--rule-strong); }
+.menu .tpl-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

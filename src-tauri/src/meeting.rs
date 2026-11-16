@@ -4,6 +4,7 @@
 use crate::{Core, audio, log};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -373,11 +374,20 @@ impl Meeting {
                 }
                 // Saved now, so a recovered meeting keeps its name and people too.
                 core_ol.store.set_meeting_meta(id, &found.people.join(" | "), &found.subject);
+                // A recurring meeting (same calendar subject) starts with the template chosen last
+                // time. A choice already made for this meeting is never overridden.
+                let mut template = String::new();
+                if core_ol.store.meeting_template(id).is_empty() {
+                    if let Some(t) = core_ol.store.template_for_subject(&found.subject, id) {
+                        core_ol.store.set_meeting_template(id, &t);
+                        template = t;
+                    }
+                }
                 let who = if found.people.len() == 1 { crate::smart::display_name(&found.people[0]) } else { String::new() };
                 log::log(format!("meeting named from Outlook ({} other people)", found.people.len()));
                 let _ = core_ol.app.emit(
                     "meeting-named",
-                    serde_json::json!({ "title": found.subject, "people": found.people.join(", "), "who": who }),
+                    serde_json::json!({ "title": found.subject, "people": found.people.join(", "), "who": who, "template": template }),
                 );
             });
         }
@@ -546,7 +556,7 @@ fn with_people(transcript: &str, others: &[String]) -> String {
 /// written now.
 /// Returns the notes and the part notes behind them (with the meeting time they cover), which are
 /// saved so a resumed meeting can reuse them.
-pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_notes: &str, others: &[String]) -> anyhow::Result<(String, Vec<String>, f32)> {
+pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_notes: &str, others: &[String], template: &crate::templates::Template) -> anyhow::Result<(String, Vec<String>, f32)> {
     let (mut parts, from) = match live {
         Some(mut l) => {
             if let Some(h) = l.handle.take() {
@@ -568,7 +578,7 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
     // that does not fit in one pass. A short resume must not keep the thin notes from the first half.
     let single = if language == Some("Persian") { SINGLE_PASS_CHARS_PERSIAN } else { SINGLE_PASS_CHARS };
     if full.chars().count() <= single {
-        return Ok((llm.meeting_single(&full, language, my_notes, &user, minutes)?, Vec::new(), 0.0));
+        return Ok((llm.meeting_single(&full, language, my_notes, &user, minutes, template)?, Vec::new(), 0.0));
     }
     let mut a = from;
     while a <= end {
@@ -580,7 +590,7 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
         a += WINDOW_SECS;
     }
     log::log(format!("meeting notes: merging {} parts", parts.len()));
-    let notes = llm.meeting_merge(&parts, language, my_notes, &user, minutes)?;
+    let notes = llm.meeting_merge(&parts, language, my_notes, &user, minutes, template)?;
     // Covered up to where the talk actually ended, so a resumed meeting's new words start a new stretch.
     Ok((notes, parts, end))
 }
@@ -629,37 +639,165 @@ pub fn main_language(segs: &[Segment]) -> Option<&'static str> {
     }
     (arabic > latin).then_some("Persian")
 }
+/// The words of a text that count for matching a question: folded (so Arabic yeh, a missing ZWNJ
+/// or harakat don't matter), longer than two letters.
+pub fn word_set(t: &str) -> HashSet<String> {
+    crate::search::fold(t)
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .filter(|w| w.chars().count() > 2)
+        .collect()
+}
+
+/// The best `window`-line stretches of `lines` for these words, in time order, within `budget`
+/// characters. `pad`: also take stretches that share no word (the per-meeting Ask fills its budget).
+fn pick_windows(lines: &[String], words: &HashSet<String>, budget: usize, window: usize, pad: bool) -> String {
+    let stretch = |i: usize| &lines[i..(i + window).min(lines.len())];
+    let mut windows: Vec<(usize, usize)> = (0..lines.len()).step_by(window.max(1)).map(|i| (i, words.intersection(&word_set(&stretch(i).join(" "))).count())).collect();
+    if !pad {
+        windows.retain(|w| w.1 > 0);
+    }
+    windows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut keep = Vec::new();
+    let mut used = 0;
+    for &(i, _) in &windows {
+        let chunk = stretch(i).join("\n");
+        if used + chunk.chars().count() > budget {
+            continue;
+        }
+        used += chunk.chars().count();
+        keep.push((i, chunk));
+    }
+    if keep.is_empty() && !pad {
+        // Not even one stretch fits: the lines of the best one that do, best line first (cut to the
+        // budget when it alone is too long), in time order.
+        if let Some(&(i, _)) = windows.first() {
+            let lines = stretch(i);
+            let mut order: Vec<usize> = (0..lines.len()).collect();
+            order.sort_by_key(|j| std::cmp::Reverse(words.intersection(&word_set(&lines[*j])).count()));
+            let mut picked: Vec<(usize, String)> = Vec::new();
+            for j in order {
+                let n = lines[j].chars().count() + 1;
+                if used + n <= budget {
+                    used += n;
+                    picked.push((j, lines[j].clone()));
+                } else if picked.is_empty() {
+                    picked.push((j, lines[j].chars().take(budget).collect()));
+                    break;
+                }
+            }
+            picked.sort();
+            keep.push((i, picked.into_iter().map(|(_, l)| l).collect::<Vec<_>>().join("\n")));
+        }
+    }
+    keep.sort();
+    keep.into_iter().map(|(_, c)| c).collect::<Vec<_>>().join("\n…\n")
+}
+
 /// What the Ask box sends the AI: the notes plus the transcript. A long transcript doesn't fit,
 /// so then only the stretches that share the most words with the question go in (in time order).
 pub fn ask_context(title: &str, notes: &str, segs: &[Segment], question: &str) -> String {
     const BUDGET: usize = 9_000; // characters of transcript
     let lines: Vec<String> = transcript_text(segs).lines().map(str::to_string).collect();
     let total: usize = lines.iter().map(|l| l.chars().count() + 1).sum();
-    let picked = if total <= BUDGET {
-        lines.join("\n")
-    } else {
-        let words = |t: &str| t.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()).filter(|w| w.chars().count() > 2).collect::<std::collections::HashSet<_>>();
-        let q = words(question);
-        // Windows of 12 lines, scored by shared words.
-        let mut windows: Vec<(usize, usize)> = (0..lines.len()).step_by(12).map(|i| {
-            let w = words(&lines[i..(i + 12).min(lines.len())].join(" "));
-            (i, q.intersection(&w).count())
-        }).collect();
-        windows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let mut keep = Vec::new();
-        let mut used = 0;
-        for (i, _) in windows {
-            let chunk = lines[i..(i + 12).min(lines.len())].join("\n");
-            if used + chunk.chars().count() > BUDGET {
-                continue;
-            }
-            used += chunk.chars().count();
-            keep.push((i, chunk));
-        }
-        keep.sort();
-        keep.into_iter().map(|(_, c)| c).collect::<Vec<_>>().join("\n…\n")
-    };
+    let picked = if total <= BUDGET { lines.join("\n") } else { pick_windows(&lines, &word_set(question), BUDGET, 12, true) };
     format!("# Meeting notes: {title}\n{notes}\n\n# Transcript\n{picked}")
+}
+
+/// The notes of one meeting within `budget` characters: all of them when they fit, else the
+/// `## ` sections that share the most words with the question (+3 for the section the question's
+/// intent asks for), in their original order, the last one cut at a line end.
+fn pick_notes(notes: &str, words: &HashSet<String>, intent: Option<crate::search::Intent>, budget: usize) -> String {
+    use crate::search::Intent;
+    use crate::templates::Kind;
+    let notes = notes.trim();
+    if notes.chars().count() <= budget {
+        return notes.to_string();
+    }
+    let mut sections: Vec<Vec<&str>> = Vec::new();
+    for line in notes.lines() {
+        if line.starts_with("## ") || sections.is_empty() {
+            sections.push(Vec::new());
+        }
+        if let Some(last) = sections.last_mut() {
+            last.push(line);
+        }
+    }
+    let wanted = intent.map(|i| match i {
+        Intent::NextSteps => Kind::NextSteps,
+        Intent::Decisions => Kind::Decisions,
+        Intent::Open => Kind::OpenQuestions,
+    });
+    let scored: Vec<(usize, usize)> = sections
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let heading = s.first().and_then(|l| l.strip_prefix("## ")).unwrap_or("");
+            let bonus = if wanted.is_some() && crate::templates::kind_of(heading) == wanted { 3 } else { 0 };
+            (i, words.intersection(&word_set(&s.join(" "))).count() + bonus)
+        })
+        .collect();
+    let mut order = scored.clone();
+    // All zero: the sections from the top.
+    order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let (mut used, mut keep) = (0usize, Vec::new());
+    for (i, _) in order {
+        let text = sections[i].join("\n");
+        let len = text.chars().count() + 1;
+        if used + len <= budget {
+            used += len;
+            keep.push((i, text));
+            continue;
+        }
+        // The last one, cut at a line end (only when more than its heading fits).
+        let mut cut = Vec::new();
+        for line in &sections[i] {
+            if used + line.chars().count() + 1 > budget {
+                break;
+            }
+            used += line.chars().count() + 1;
+            cut.push(*line);
+        }
+        if cut.len() > 1 {
+            keep.push((i, cut.join("\n")));
+        }
+        break;
+    }
+    keep.sort();
+    keep.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n")
+}
+
+/// One meeting's block for the cross-meeting prompt:
+/// "### [2] Title | Tuesday, 11 November 2026, 09:44 | 31 min | with Sam", the notes (up to 60% of
+/// the budget; all of it with `notes_only`), then the transcript stretches that share a word.
+pub fn digest(n: usize, m: &crate::store::Meeting, segs: &[Segment], words: &HashSet<String>, intent: Option<crate::search::Intent>, budget: usize, notes_only: bool) -> String {
+    let title = [m.title.trim(), m.cal.trim()].into_iter().find(|t| !t.is_empty()).unwrap_or("Notes not written yet");
+    let mut head = format!("### [{n}] {title}");
+    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(&m.ts) {
+        head.push_str(&t.format(" | %A, %-d %B %Y, %H:%M").to_string());
+    }
+    head.push_str(&format!(" | {} min", ((m.secs / 60.0).round() as i64).max(1)));
+    let people: Vec<&str> = m.people.split(" | ").map(str::trim).filter(|p| !p.is_empty()).collect();
+    if !people.is_empty() {
+        head.push_str(&format!(" | with {}", people.join(", ")));
+    }
+    let notes = pick_notes(&m.notes, words, intent, if notes_only { budget } else { budget * 6 / 10 });
+    let mut out = head;
+    if !notes.is_empty() {
+        out.push('\n');
+        out.push_str(&notes);
+    }
+    if !notes_only {
+        let rest = budget.saturating_sub(notes.chars().count());
+        let lines: Vec<String> = transcript_text(segs).lines().map(str::to_string).collect();
+        // Short stretches: a meeting's share is often under 1,000 characters.
+        let picked = pick_windows(&lines, words, rest, 3, false);
+        if !picked.is_empty() {
+            out.push_str("\nTranscript:\n");
+            out.push_str(&picked);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -736,6 +874,61 @@ mod tests {
         eprintln!("{what}: echo reduced by {erle:.1} dB; user speech kept at {:.0}% energy", kept * 100.0);
         assert!(erle > 15.0, "{what}: echo only reduced by {erle:.1} dB");
         assert!(kept > 0.5, "{what}: user speech dropped to {:.0}% energy", kept * 100.0);
+    }
+
+    fn meeting(id: i64, notes: &str) -> crate::store::Meeting {
+        crate::store::Meeting {
+            id,
+            ts: "2026-11-11T09:44:02+03:30".into(),
+            secs: 1860.0,
+            title: "Release plan and budget".into(),
+            transcript: String::new(),
+            notes: notes.into(),
+            my_notes: String::new(),
+            chat: String::new(),
+            people: "Sam".into(),
+            cal: String::new(),
+            template: String::new(),
+            parts: String::new(),
+        }
+    }
+
+    fn seg(start: f32, text: &str) -> Segment {
+        Segment { who: "Them".into(), start, end: start + 2.0, text: text.into() }
+    }
+
+    #[test]
+    fn digest_blocks() {
+        let words: HashSet<String> = ["budget".to_string()].into();
+        let segs: Vec<Segment> = (0..40).map(|i| seg(i as f32 * 3.0, if i == 30 { "the budget is cut by ten percent" } else { "small talk about the weather" })).collect();
+        let d = digest(2, &meeting(1, "## Release\n- Thursday"), &segs, &words, None, 3_000, false);
+        assert!(d.starts_with("### [2] Release plan and budget | Wednesday, 11 November 2026, 09:44 | 31 min | with Sam\n## Release\n- Thursday\nTranscript:\n"), "{d}");
+        assert!(d.contains("the budget is cut"));
+        // Only stretches that share a word: the 3 lines around line 30.
+        assert_eq!(d.matches("[01:").count() + d.matches("[00:").count(), 3);
+        // A share too small for a whole stretch still gets the line that matters.
+        let d = digest(1, &meeting(1, ""), &segs, &words, None, 50, false);
+        assert!(d.ends_with("Transcript:\n[01:30] Them: the budget is cut by ten percent"), "{d}");
+        // Digest mode: notes only.
+        assert!(!digest(1, &meeting(1, "## Release\n- Thursday"), &segs, &words, None, 3_000, true).contains("Transcript:"));
+        // No shared word: no transcript part.
+        assert!(!digest(1, &meeting(1, ""), &segs, &HashSet::new(), None, 3_000, false).contains("Transcript:"));
+    }
+
+    #[test]
+    fn long_notes_keep_the_sections_that_matter() {
+        let notes = format!("## Weather\n- {}\n## Budget\n- cut by ten percent\n## Next steps\n- **Send the deck** (Sam)\n- **Book the room** (Alex)", "sunny ".repeat(40));
+        let words: HashSet<String> = ["budget".to_string()].into();
+        let got = pick_notes(&notes, &words, Some(crate::search::Intent::NextSteps), 120);
+        assert_eq!(got, "## Budget\n- cut by ten percent\n## Next steps\n- **Send the deck** (Sam)\n- **Book the room** (Alex)");
+        // Too small for the whole last section: cut at a line end.
+        let got = pick_notes(&notes, &words, Some(crate::search::Intent::NextSteps), 60);
+        assert_eq!(got, "## Next steps\n- **Send the deck** (Sam)", "{got}");
+        // Nothing shared: from the top.
+        let got = pick_notes(&notes, &HashSet::new(), None, 300);
+        assert!(got.starts_with("## Weather"));
+        // The per-meeting Ask matches Persian written with Arabic yeh.
+        assert!(word_set("كيفيت بالا").contains("کیفیت"));
     }
 
     #[test]

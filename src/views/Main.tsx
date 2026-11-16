@@ -108,7 +108,7 @@ export default function Main() {
             {settings && !opened && (
               <>
                 {section === "home" && <Overview settings={settings} status={status} go={setSection} open={setOpened} />}
-                {section === "meetings" && <Meetings me={settings.user_name} />}
+                {section === "meetings" && <Meetings me={settings.user_name} go={setSection} />}
                 {section === "history" && <History open={setOpened} />}
                 {section === "words" && <Vocabulary />}
                 {section === "settings" && <Settings settings={settings} update={update} status={status} go={setSection} />}

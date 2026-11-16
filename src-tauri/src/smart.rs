@@ -239,30 +239,6 @@ fn unescape(body: &str) -> String {
     out
 }
 
-/// Words from a meeting the list can match: title, people, calendar subject, and what was said.
-pub fn meeting_haystack(title: &str, people: &str, cal: &str, transcript_json: &str) -> String {
-    let said = json_texts(transcript_json);
-    [title.trim(), people.trim(), cal.trim(), said.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")
-}
-
-fn json_texts(json: &str) -> String {
-    let key = "\"text\":\"";
-    let mut rest = json;
-    let mut out = String::new();
-    while let Some(at) = rest.find(key) {
-        let body = &rest[at + key.len()..];
-        let value = unescape(body);
-        if !value.is_empty() {
-            if !out.is_empty() {
-                out.push(' ');
-            }
-            out.push_str(&value);
-        }
-        rest = body.get(scan_string_len(body).max(1)..).unwrap_or("");
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,14 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_outlook_json_and_builds_a_search_line() {
+    fn parses_outlook_json() {
         let appt = parse_appointment(r#"{"subject":"Calendar sync","people":["Bob Driscoll","Moe"]}"#).unwrap();
         assert_eq!(appt.subject, "Calendar sync");
         assert_eq!(appt.people, vec!["Bob Driscoll".to_string(), "Moe".to_string()]);
-        let hay = meeting_haystack("Phones are back", "Bob Driscoll", "Calendar sync", r#"[{"who":"Them","text":"the dial tone is gone"}]"#);
-        assert!(hay.contains("Bob Driscoll"));
-        assert!(hay.contains("dial tone"));
-        assert!(hay.contains("Calendar sync"));
         let one = parse_appointment(r#"{"subject":"Caf\u00e9 sync","people":"Bob Driscoll"}"#).unwrap();
         assert_eq!(one.subject, "Café sync");
         assert_eq!(one.people, vec!["Bob Driscoll".to_string()]);

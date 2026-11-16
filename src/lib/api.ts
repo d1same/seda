@@ -43,6 +43,7 @@ export type Settings = {
   email: string;
   snippets: Snippet[];
   keep_meeting_audio: boolean;
+  templates: Template[]; // custom note templates only (built-ins live in the core)
 };
 
 export type Snippet = { say: string; paste: string };
@@ -60,10 +61,22 @@ export type HistoryItem = {
 export type Fix = { wrong: string; right: string; hits: number };
 
 export type Segment = { who: string; start: number; end?: number; text: string };
-/** In the list, transcript and notes are empty. Title is empty while the notes are being written. `search` also matches what was said and the Outlook appointment. */
-export type Meeting = { id: number; ts: string; secs: number; title: string; transcript: string; notes: string; my_notes: string; chat: string; people?: string; cal?: string; search?: string };
-export type ChatTurn = { role: "you" | "ai"; text: string; edited?: boolean };
-export type MeetingStatus = { running: boolean; secs: number; segments: Segment[]; my_notes: string; resuming?: string; title?: string; people?: string };
+/** In the list, transcript and notes are empty. Title is empty while the notes are being written.
+ *  `template` is a template id; "" means never chosen (behaves as Auto). */
+export type Meeting = { id: number; ts: string; secs: number; title: string; transcript: string; notes: string; my_notes: string; chat: string; people?: string; cal?: string; template: string };
+/** A meeting an answer across meetings read. `n` is the number the answer cites as [n]. */
+export type Source = { n: number; id: number; title: string; ts: string; cited: boolean };
+export type ChatTurn = { role: "you" | "ai"; text: string; edited?: boolean; sources?: Source[] };
+/** `id` and `template` are known once the recording's row exists (from the first second). */
+export type MeetingStatus = { running: boolean; secs: number; segments: Segment[]; my_notes: string; resuming?: string; title?: string; people?: string; id?: number; template?: string };
+/** A search result: which field matched, and the matched word with the text around it. */
+export type SearchHit = { id: number; field: "title" | "people" | "notes" | "said"; snippet: [string, string, string] }; // before, matched word, after
+export type TemplateSection = { heading: string; hint: string };
+export type Template = { id: string; name: string; about: string; sections: TemplateSection[]; builtin?: boolean };
+export type ExportsInfo = { dir: string; cloud: boolean };
+export type ExportAll = { count: number; dir: string };
+/** What a copy takes from a meeting. */
+export type CopyWhat = "notes" | "mine" | "transcript" | "all";
 
 export type Pack = "full" | "light" | "speech";
 export type SetupItem = { id: string; name: string; size_mb: number; state: "ready" | "missing"; path: string };
@@ -127,6 +140,19 @@ export const api = {
   meetingSaveNotes: (id: number, title: string, notes: string) => invoke<void>("meeting_save_notes", { id, title, notes }),
   meetingAsk: (id: number, question: string) => invoke<ChatTurn[]>("meeting_ask", { id, question }),
   meetingClearChat: (id: number) => invoke<void>("meeting_clear_chat", { id }),
+  meetingsSearch: (query: string) => invoke<SearchHit[]>("meetings_search", { query }),
+  /** `ids` omitted = every finished meeting. Returns the whole thread. */
+  meetingsAsk: (question: string, ids?: number[]) => invoke<ChatTurn[]>("meetings_ask", { question, ids: ids ?? null }),
+  meetingsAskLog: () => invoke<ChatTurn[]>("meetings_ask_log"),
+  meetingsAskClear: () => invoke<void>("meetings_ask_clear"),
+  meetingTemplates: () => invoke<Template[]>("meeting_templates"),
+  meetingSetTemplate: (id: number, template: string) => invoke<void>("meeting_set_template", { id, template }),
+  meetingRebuild: (id: number) => invoke<void>("meeting_rebuild", { id }),
+  meetingCopy: (id: number, what: CopyWhat) => invoke<void>("meeting_copy", { id, what }),
+  meetingExport: (id: number) => invoke<string>("meeting_export", { id }),
+  meetingsExportAll: () => invoke<ExportAll>("meetings_export_all"),
+  exportsInfo: () => invoke<ExportsInfo>("exports_info"),
+  openExportsFolder: () => invoke<void>("open_exports_folder"),
   callStart: () => invoke<void>("call_start"),
   callDismiss: () => invoke<void>("call_dismiss"),
   callHide: () => invoke<void>("call_hide"),

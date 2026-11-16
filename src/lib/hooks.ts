@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Binding, type Settings, type Status } from "./api";
 import { inTauri, on } from "./events";
 
@@ -70,4 +70,27 @@ export function useLocalShortcut(binding: Binding | undefined) {
       window.removeEventListener("mouseup", mu);
     };
   }, [binding?.kind, binding?.code, binding?.ctrl, binding?.shift, binding?.alt, binding?.win]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+/** A small popover (a menu): closes on a click outside `wrap` and on Esc. By default Esc returns
+ *  focus to `trigger`; pass `onEscape` to do something else (the notepad's slash menu puts the `/` back). */
+export function usePopover<T extends HTMLElement = HTMLButtonElement>(onEscape?: () => void) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const trigger = useRef<T>(null);
+  const esc = useRef(onEscape);
+  esc.current = onEscape;
+  useEffect(() => {
+    if (!open) return;
+    const down = (e: MouseEvent) => { if (!wrap.current?.contains(e.target as Node)) setOpen(false); };
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      setOpen(false);
+      if (esc.current) esc.current(); else trigger.current?.focus();
+    };
+    document.addEventListener("mousedown", down);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("mousedown", down); document.removeEventListener("keydown", key); };
+  }, [open]);
+  return { open, setOpen, wrap, trigger };
 }

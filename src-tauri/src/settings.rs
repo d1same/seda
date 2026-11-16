@@ -71,6 +71,8 @@ pub struct Settings {
     pub snippets: Vec<Snippet>,
     /// Save meeting audio as WAV files. Off: like Granola, audio is transcribed live and never stored.
     pub keep_meeting_audio: bool,
+    /// The user's own note templates (built-ins are in templates.rs). Cleaned on every save.
+    pub templates: Vec<crate::templates::Template>,
 }
 
 impl Default for Settings {
@@ -103,6 +105,7 @@ impl Default for Settings {
             email: String::new(),
             snippets: Vec::new(),
             keep_meeting_audio: false,
+            templates: Vec::new(),
         }
     }
 }

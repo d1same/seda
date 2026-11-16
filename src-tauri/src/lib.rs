@@ -1,13 +1,16 @@
 mod asr;
 mod audio;
 mod detect;
+mod export;
 mod hotkey;
 mod llm;
 mod meeting;
 mod outlook;
+mod search;
 mod settings;
 mod smart;
 mod store;
+mod templates;
 mod log;
 mod setup;
 mod update;
@@ -17,6 +20,7 @@ use hotkey::HotkeyEvent;
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use settings::{Binding, Settings};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -114,6 +118,8 @@ pub struct Core {
     mic_test: Mutex<Option<audio::Recording>>,
     meeting: Mutex<Option<meeting::Meeting>>,
     call: Mutex<CallState>,
+    /// Bumps on every meeting delete; the search index is compacted once the deletes stop.
+    compact_gen: AtomicU64,
 }
 
 type CoreState<'a> = State<'a, Arc<Core>>;
@@ -904,6 +910,13 @@ fn update_setting(core: CoreState, key: String, value: serde_json::Value) -> Res
             return Err(format!("Choose a file inside {}", setup::models_dir().display()));
         }
     }
+    // Custom templates go into the prompts: keep them within the limits that protect the context.
+    let value = if key == "templates" {
+        let list: Vec<templates::Template> = serde_json::from_value(value).map_err(|e| format!("bad value for templates: {e}"))?;
+        serde_json::to_value(templates::clean(list)).map_err(|e| e.to_string())?
+    } else {
+        value
+    };
     obj.insert(key.clone(), value);
     let next: Settings = serde_json::from_value(json).map_err(|e| format!("bad value for {key}: {e}"))?;
     log::log(format!("setting {key} changed"));
@@ -1320,9 +1333,7 @@ fn meeting_resume(core: CoreState, window: tauri::WebviewWindow, id: i64) -> Res
     only(&window, "main")?;
     let m = core.store.meeting(id).ok_or("Meeting not found")?;
     let segments: Vec<meeting::Segment> = serde_json::from_str(&m.transcript).unwrap_or_default();
-    let saved: serde_json::Value = serde_json::from_str(&m.parts).unwrap_or_default();
-    let parts: Vec<String> = serde_json::from_value(saved["parts"].clone()).unwrap_or_default();
-    let until = if parts.is_empty() { 0.0 } else { saved["until"].as_f64().unwrap_or(0.0) as f32 };
+    let (parts, until) = saved_parts(&m.parts);
     let resume = meeting::Resume { id, offset: m.secs as f32, segments, my_notes: m.my_notes, parts, until };
     start_meeting_with(core.inner(), Some(resume))
 }
@@ -1607,25 +1618,35 @@ fn recover_meetings(core: &Arc<Core>) {
         core.store.set_meeting_notes(id, "", "");
         let _ = core.app.emit("meetings-changed", ());
         // The part notes written during the meeting were checkpointed too.
-        let saved: serde_json::Value = serde_json::from_str(&m.parts).unwrap_or_default();
-        let parts: Vec<String> = serde_json::from_value(saved["parts"].clone()).unwrap_or_default();
-        let until = if parts.is_empty() { 0.0 } else { saved["until"].as_f64().unwrap_or(0.0) as f32 };
+        let (parts, until) = saved_parts(&m.parts);
         write_meeting_notes(core, id, Some(meeting::LiveNotes::from_saved(parts, until)));
     }
 }
 
-/// live: the part notes written during the meeting (None when rewriting later).
-fn write_meeting_notes(core: &Core, id: i64, live: Option<meeting::LiveNotes>) {
-    let Some(m) = core.store.meeting(id) else { return };
+/// The part notes saved with a meeting, and the meeting time they cover.
+fn saved_parts(json: &str) -> (Vec<String>, f32) {
+    let saved: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    let parts: Vec<String> = serde_json::from_value(saved["parts"].clone()).unwrap_or_default();
+    let until = if parts.is_empty() { 0.0 } else { saved["until"].as_f64().unwrap_or(0.0) as f32 };
+    (parts, until)
+}
+
+/// live: the part notes written during the meeting (None when rewriting later). False when the
+/// notes could not be written (the row then says so).
+fn write_meeting_notes(core: &Core, id: i64, live: Option<meeting::LiveNotes>) -> bool {
+    let Some(m) = core.store.meeting(id) else { return false };
     let segs: Vec<meeting::Segment> = serde_json::from_str(&m.transcript).unwrap_or_default();
     if segs.is_empty() && m.my_notes.trim().is_empty() {
         core.store.set_meeting_notes(id, "Empty meeting", "Nothing was said.");
         let _ = core.app.emit("meetings-changed", ());
-        return;
+        return true;
     }
     let t = Instant::now();
     let others: Vec<String> = m.people.split(" | ").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-    let notes = meeting::write_notes(core, &segs, live, &m.my_notes, &others);
+    // A recovered or rewritten meeting keeps the template chosen for it (a removed one reads as Auto).
+    let template = templates::resolve(&core.settings.read().templates, &m.template);
+    let notes = meeting::write_notes(core, &segs, live, &m.my_notes, &others, &template);
+    let written = notes.is_ok();
     let (title, notes) = match notes {
         Ok((n, parts, until)) => {
             // Kept so Resume only needs notes for the new stretch.
@@ -1649,11 +1670,16 @@ fn write_meeting_notes(core: &Core, id: i64, live: Option<meeting::LiveNotes>) {
     log::log(format!("meeting notes written in {:.1}s", t.elapsed().as_secs_f32()));
     core.store.set_meeting_notes(id, &title, &notes);
     let _ = core.app.emit("meetings-changed", ());
+    written
 }
 
 #[derive(Serialize)]
 struct MeetingStatus {
     running: bool,
+    /// The running meeting's row (0 when nothing is recording).
+    id: i64,
+    /// Its template id ('' = never chosen).
+    template: String,
     secs: f64,
     /// Title of the meeting being continued (Resume), else empty.
     resuming: String,
@@ -1671,6 +1697,8 @@ fn meeting_status(core: CoreState) -> MeetingStatus {
             let appt = m.appointment.lock().clone();
             MeetingStatus {
                 running: true,
+                id: m.id,
+                template: core.store.meeting_template(m.id),
                 secs: m.offset as f64 + m.started.elapsed().as_secs_f64(),
                 resuming: if m.resumed { core.store.meeting(m.id).map(|x| x.title).unwrap_or_default() } else { String::new() },
                 title: appt.subject,
@@ -1679,7 +1707,7 @@ fn meeting_status(core: CoreState) -> MeetingStatus {
                 my_notes: m.my_notes.lock().clone(),
             }
         }
-        None => MeetingStatus { running: false, secs: 0.0, resuming: String::new(), title: String::new(), people: String::new(), segments: Vec::new(), my_notes: String::new() },
+        None => MeetingStatus { running: false, id: 0, template: String::new(), secs: 0.0, resuming: String::new(), title: String::new(), people: String::new(), segments: Vec::new(), my_notes: String::new() },
     }
 }
 
@@ -1713,6 +1741,19 @@ struct ChatTurn {
     /// True when this answer rewrote the notes.
     #[serde(default)]
     edited: bool,
+    /// Ask across meetings: the meetings the answer read, numbered as cited ([n]).
+    #[serde(default)]
+    sources: Vec<Source>,
+}
+
+#[derive(Serialize, serde::Deserialize, Clone)]
+struct Source {
+    n: u32,
+    id: i64,
+    title: String,
+    ts: String,
+    /// True when the answer cites [n].
+    cited: bool,
 }
 
 /// Ask about a meeting, or tell the AI to change its notes. Returns the updated chat.
@@ -1741,8 +1782,8 @@ fn meeting_ask(core: CoreState, id: i64, question: String) -> Result<Vec<ChatTur
         core.store.set_meeting_notes(id, title, llm::drop_empty_sections(body.trim()).trim());
     }
     let answer = if answer.is_empty() && edited { "Updated the notes.".to_string() } else { answer };
-    chat.push(ChatTurn { role: "you".into(), text: question, edited: false });
-    chat.push(ChatTurn { role: "ai".into(), text: answer, edited });
+    chat.push(ChatTurn { role: "you".into(), text: question, edited: false, sources: Vec::new() });
+    chat.push(ChatTurn { role: "ai".into(), text: answer, edited, sources: Vec::new() });
     core.store.set_meeting_chat(id, &serde_json::to_string(&chat).unwrap_or_default());
     let _ = core.app.emit("meetings-changed", ());
     Ok(chat)
@@ -1773,6 +1814,210 @@ fn meeting_clear_chat(core: CoreState, id: i64) {
     core.store.set_meeting_chat(id, "[]");
 }
 
+// ---------- ask across meetings ----------
+
+/// The list page's one thread, kept in kv['ask_all'] (last 20 turns).
+fn ask_thread(core: &Core) -> Vec<ChatTurn> {
+    core.store.kv_get("ask_all").and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn meetings_ask_log(core: CoreState) -> Vec<ChatTurn> {
+    ask_thread(&core)
+}
+
+#[tauri::command]
+fn meetings_ask_clear(core: CoreState) {
+    core.store.kv_set("ask_all", "[]");
+}
+
+/// Ask about several meetings: `ids` (the ticked or shown ones), or every finished meeting.
+/// Returns the whole thread.
+#[tauri::command(async)]
+fn meetings_ask(core: CoreState, question: String, ids: Option<Vec<i64>>) -> Result<Vec<ChatTurn>, String> {
+    ask_all(core.inner(), question, ids)
+}
+
+fn ask_all(core: &Arc<Core>, question: String, ids: Option<Vec<i64>>) -> Result<Vec<ChatTurn>, String> {
+    let question = question.trim().to_string();
+    if question.is_empty() {
+        return Err("Type a question first.".into());
+    }
+    let mut thread = ask_thread(core);
+    let scope: Vec<store::Meeting> = match &ids {
+        Some(ids) => core.store.meetings().into_iter().filter(|m| ids.contains(&m.id)).collect(),
+        None => core.store.meetings(),
+    }; // newest first
+    if scope.is_empty() {
+        return Err("There are no meetings to ask about yet.".into());
+    }
+    let titles = scope.iter().map(|m| m.title.as_str()).collect::<Vec<_>>().join(" ");
+    let (ctx, k) = if search::mostly_persian(&format!("{question} {titles}")) { (8_000usize, 4usize) } else { (12_000, 6) };
+    let now = chrono::Local::now();
+    let prev = thread.iter().rev().find(|t| t.role == "you").map(|t| t.text.clone()).unwrap_or_default();
+    let last: Vec<i64> = thread.iter().rev().find(|t| t.role == "ai").map(|t| t.sources.iter().map(|s| s.id).collect()).unwrap_or_default();
+    let last: Vec<i64> = last.into_iter().filter(|id| scope.iter().any(|m| m.id == *id)).collect();
+    let mut pick = pick_meetings(&core.store, &scope, &question, &prev, ids.is_some(), &last, k, now);
+    let you = ChatTurn { role: "you".into(), text: question.clone(), edited: false, sources: Vec::new() };
+    if pick.empty_period {
+        // The question names a period with no meetings: said without the model.
+        thread.push(you);
+        thread.push(ChatTurn { role: "ai".into(), text: "No meetings in that period.".into(), edited: false, sources: Vec::new() });
+        return Ok(save_thread(core, thread));
+    }
+    let t = Instant::now();
+    let mut guard = core.llm.try_lock_for(Duration::from_secs(2)).ok_or(AI_BUSY)?;
+    let llm = guard.as_mut().ok_or("The writing AI isn't running yet")?;
+    if pick.lexical && pick.ranked && pick.chosen.len() < 3 {
+        // English question, Persian meeting (or the reverse): search again with keywords in both
+        // languages. A failure or timeout just keeps what was found.
+        if let Ok(kw) = llm.search_keywords(&question) {
+            let extra: Vec<String> = kw.split([',', '،', '\n']).filter_map(|w| search::match_expr(w, search::Mode::Any)).map(|e| format!("({e})")).collect();
+            let base = search::match_expr(&question, search::Mode::Any).map(|e| format!("({e})"));
+            let all: Vec<String> = base.into_iter().chain(extra).collect();
+            if !all.is_empty() {
+                let again = rank_in(&core.store, &scope, &all.join(" OR "), k);
+                if again.len() > pick.chosen.len() {
+                    pick.chosen = again;
+                }
+            }
+        }
+    }
+    if pick.chosen.is_empty() {
+        // Still nothing: the most recent ones. The sources line shows what was read.
+        pick.ranked = false;
+        pick.chosen = scope.iter().take(4).map(|m| m.id).collect();
+    }
+    let mut chosen = pick.chosen;
+    let best = if pick.ranked { chosen.first().copied() } else { None };
+    chosen.sort(); // oldest to newest, numbered [1]…[n]
+    let n = chosen.len();
+    let share = ctx / if best.is_some() { n + 1 } else { n };
+    let words = search::content_words(&question);
+    // A topic-less question ("What is still open?") reads the notes; a topic also reads what was said.
+    let notes_only = words.is_empty();
+    let mut wordset: HashSet<String> = words.into_iter().collect();
+    if pick.followup {
+        wordset.extend(search::content_words(&prev));
+    }
+    let intent = search::intent(&question);
+    let mut blocks = Vec::new();
+    let mut sources = Vec::new();
+    for id in &chosen {
+        // Numbered by what is actually read: a meeting deleted meanwhile leaves no gap.
+        let Some(m) = core.store.meeting(*id) else { continue };
+        let n = blocks.len() + 1;
+        let segs: Vec<meeting::Segment> = serde_json::from_str(&m.transcript).unwrap_or_default();
+        let budget = if Some(*id) == best { share * 2 } else { share };
+        blocks.push(meeting::digest(n, &m, &segs, &wordset, intent, budget, notes_only));
+        let title = [m.title.trim(), m.cal.trim()].into_iter().find(|t| !t.is_empty()).unwrap_or("Meeting").to_string();
+        sources.push(Source { n: n as u32, id: m.id, title, ts: m.ts.clone(), cited: false });
+    }
+    // Earlier answers lose their [n]: every question numbers its meetings from 1 again.
+    let history: Vec<(String, String)> =
+        thread.iter().map(|t| (t.role.clone(), if t.role == "ai" { search::citations(&t.text, 0).0 } else { t.text.clone() })).collect();
+    let user = core.settings.read().user_name.clone();
+    let today = now.format("%A, %-d %B %Y").to_string();
+    let reply = llm.ask_meetings(&blocks.join("\n\n"), &history, &question, &user, &today).map_err(|e| e.to_string())?;
+    drop(guard);
+    let (answer, cited) = search::citations(&reply, sources.len());
+    for s in &mut sources {
+        s.cited = cited.contains(&(s.n as usize));
+    }
+    log::log(format!("ask across meetings: {} read, {} cited, {:.1}s", sources.len(), cited.len(), t.elapsed().as_secs_f32()));
+    thread.push(you);
+    thread.push(ChatTurn { role: "ai".into(), text: answer, edited: false, sources });
+    Ok(save_thread(core, thread))
+}
+
+/// Which meetings a question to the list page reads.
+#[derive(Debug, Default, PartialEq)]
+struct Pick {
+    /// Best first when `ranked`.
+    chosen: Vec<i64>,
+    ranked: bool,
+    /// Picked by a word search (keyword expansion may widen it).
+    lexical: bool,
+    /// A follow-up that matched nothing itself: the previous answer's meetings, and the previous
+    /// question's words count when picking transcript lines.
+    followup: bool,
+    /// The question names a period with no meetings in it.
+    empty_period: bool,
+}
+
+/// The ids of `scope` that match `expr`, best first, at most `k`.
+fn rank_in(store: &Store, scope: &[store::Meeting], expr: &str, k: usize) -> Vec<i64> {
+    store.search_meetings(expr, 50).into_iter().map(|(id, _)| id).filter(|id| scope.iter().any(|m| m.id == *id)).take(k).collect()
+}
+
+/// `scope` is newest first; `explicit`: the window passed ids (ticked or shown rows); `last`: the
+/// previous answer's meetings that are still in scope.
+#[allow(clippy::too_many_arguments)]
+fn pick_meetings(store: &Store, scope: &[store::Meeting], question: &str, prev: &str, explicit: bool, last: &[i64], k: usize, now: chrono::DateTime<chrono::Local>) -> Pick {
+    let when = |m: &store::Meeting| chrono::DateTime::parse_from_rfc3339(&m.ts).ok().map(|t| t.with_timezone(&chrono::Local));
+    let in_range = |a: chrono::DateTime<chrono::Local>, b: chrono::DateTime<chrono::Local>| -> Vec<i64> {
+        scope.iter().filter(|m| when(m).is_some_and(|t| t >= a && t <= b)).map(|m| m.id).collect()
+    };
+    let words = search::content_words(question);
+    let fresh = || search::match_expr(question, search::Mode::Any).map(|e| rank_in(store, scope, &e, k)).unwrap_or_default();
+    let mut p = Pick::default();
+    if explicit && scope.len() <= k {
+        // Ticked or shown meetings that fit are all read, even with a time word in the question.
+        p.chosen = scope.iter().map(|m| m.id).collect();
+    } else if let Some((a, b)) = search::date_cue(question, now) {
+        // A time word: only that period ("this week" reads only this week's meetings).
+        let range = in_range(a, b);
+        if range.is_empty() {
+            p.empty_period = true;
+        } else if !words.is_empty() && range.len() > k {
+            // A topic too: the matching meetings of the period first, then the newest.
+            let matched: Vec<i64> = search::match_expr(question, search::Mode::Any)
+                .map(|e| store.search_meetings(&e, 50).into_iter().map(|(id, _)| id).filter(|id| range.contains(id)).collect())
+                .unwrap_or_default();
+            p.ranked = !matched.is_empty();
+            p.chosen = matched.into_iter().chain(range).fold(Vec::new(), |mut v, id| {
+                if !v.contains(&id) {
+                    v.push(id);
+                }
+                v
+            });
+            p.chosen.truncate(k);
+        } else {
+            p.chosen = range.into_iter().take(k + 2).collect();
+        }
+    } else if scope.len() <= k {
+        p.chosen = scope.iter().map(|m| m.id).collect();
+    } else if words.is_empty() {
+        // No topic, no time word ("What is still open?"): the last two weeks, or after a long
+        // break simply the newest meetings.
+        let recent = in_range(now - chrono::Duration::days(14), now);
+        p.chosen = if recent.is_empty() { scope.iter().take(k).map(|m| m.id).collect() } else { recent.into_iter().take(k + 2).collect() };
+    } else {
+        p.lexical = true;
+        // The new question is searched on its own first. Only when it finds nothing does a
+        // follow-up ("and Sam?") stay on what the previous answer read.
+        let found = fresh();
+        if !found.is_empty() {
+            p.ranked = true;
+            p.chosen = found;
+        } else if !last.is_empty() {
+            p.followup = true;
+            p.chosen = last.to_vec();
+        } else {
+            p.ranked = true;
+            p.chosen = search::match_expr(&format!("{question} {prev}"), search::Mode::Any).map(|e| rank_in(store, scope, &e, k)).unwrap_or_default();
+        }
+    }
+    p
+}
+
+fn save_thread(core: &Core, mut thread: Vec<ChatTurn>) -> Vec<ChatTurn> {
+    let extra = thread.len().saturating_sub(20);
+    thread.drain(..extra);
+    core.store.kv_set("ask_all", &serde_json::to_string(&thread).unwrap_or_else(|_| "[]".into()));
+    thread
+}
+
 #[tauri::command]
 fn meetings_list(core: CoreState) -> Vec<store::Meeting> {
     core.store.meetings()
@@ -1800,6 +2045,15 @@ fn meeting_delete(core: CoreState, id: i64) {
     }
     core.store.delete_meeting(id);
     let _ = core.app.emit("meetings-changed", ());
+    // The deleted words stay in the search index until it is compacted. A bulk delete compacts once.
+    let n = core.compact_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    let c = core.inner().clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(2));
+        if c.compact_gen.load(Ordering::SeqCst) == n {
+            c.store.compact_search();
+        }
+    });
 }
 
 #[tauri::command]
@@ -1808,6 +2062,234 @@ fn meeting_renotes(core: CoreState, id: i64) {
     let _ = core.app.emit("meetings-changed", ());
     let c = core.inner().clone();
     std::thread::spawn(move || write_meeting_notes(&c, id, None));
+}
+
+// ---------- export ----------
+
+fn template_name(core: &Core, m: &store::Meeting) -> String {
+    templates::resolve(&core.settings.read().templates, &m.template).name
+}
+
+/// Copy a meeting: formatted text (Outlook, Teams, Word) and Markdown (Obsidian, Notepad, chat) in
+/// one clipboard write. `what`: notes | mine | transcript | all. "mine" is the notepad as plain text.
+/// Kept in clipboard history on purpose: this copy is the user's own.
+#[tauri::command]
+fn meeting_copy(core: CoreState, window: tauri::WebviewWindow, id: i64, what: String) -> Result<(), String> {
+    only(&window, "main")?;
+    let m = core.store.meeting(id).ok_or("Meeting not found")?;
+    let parts = match what.as_str() {
+        "notes" => export::What { notes: true, mine: false, transcript: false },
+        "transcript" => export::What { notes: false, mine: false, transcript: true },
+        "all" => export::What::ALL,
+        "mine" => export::What { notes: false, mine: true, transcript: false },
+        _ => return Err(format!("Unknown copy: {what}")),
+    };
+    let mut cb = arboard::Clipboard::new().map_err(|e| format!("Couldn't open the clipboard: {e}"))?;
+    if what == "mine" {
+        return cb.set_text(m.my_notes.trim().to_string()).map_err(|e| format!("Couldn't copy: {e}"));
+    }
+    let me = core.settings.read().user_name.clone();
+    let md = export::markdown(&m, &me, &template_name(&core, &m), &parts, false);
+    cb.set_html(export::html(&md), Some(md)).map_err(|e| format!("Couldn't copy: {e}"))
+}
+
+/// Save as Markdown in Documents\Seda\Meetings and show it in Explorer. Returns the path.
+#[tauri::command(async)]
+fn meeting_export(core: CoreState, window: tauri::WebviewWindow, id: i64) -> Result<String, String> {
+    only(&window, "main")?;
+    let path = export_meeting(&core, id)?;
+    export::reveal(&path);
+    Ok(path.display().to_string())
+}
+
+fn export_meeting(core: &Core, id: i64) -> Result<std::path::PathBuf, String> {
+    // A meeting still being written is exported with what it has.
+    let m = core.store.meeting(id).ok_or("Meeting not found")?;
+    let me = core.settings.read().user_name.clone();
+    export::write(&m, &me, &template_name(core, &m)).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct ExportAll {
+    count: usize,
+    dir: String,
+}
+
+/// Every finished meeting, oldest first, one file each; then the folder opens. One failure is
+/// logged and skipped; when every one fails (folder read-only, disk full) the error is returned.
+#[tauri::command(async)]
+fn meetings_export_all(core: CoreState, window: tauri::WebviewWindow) -> Result<ExportAll, String> {
+    only(&window, "main")?;
+    let (mut count, mut first_error) = (0, None);
+    for m in core.store.meetings().into_iter().rev() {
+        match export_meeting(&core, m.id) {
+            Ok(_) => count += 1,
+            Err(e) => {
+                log::log(format!("export of meeting {} failed: {e}", m.id));
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    if let (0, Some(e)) = (count, first_error) {
+        return Err(e);
+    }
+    let dir = export::dir();
+    log::log(format!("exported {count} meetings"));
+    export::open_folder(&dir);
+    Ok(ExportAll { count, dir: dir.display().to_string() })
+}
+
+#[derive(Serialize)]
+struct ExportsInfo {
+    dir: String,
+    /// The folder is inside OneDrive: exported files sync to the user's account.
+    cloud: bool,
+}
+
+#[tauri::command]
+fn exports_info() -> ExportsInfo {
+    let dir = export::dir();
+    ExportsInfo { cloud: export::is_cloud(&dir), dir: dir.display().to_string() }
+}
+
+#[tauri::command]
+fn open_exports_folder(window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "main")?;
+    export::open_folder(&export::dir());
+    Ok(())
+}
+
+// ---------- templates ----------
+
+#[tauri::command]
+fn meeting_templates(core: CoreState) -> Vec<templates::TemplateInfo> {
+    templates::all(&core.settings.read().templates)
+}
+
+/// Choose a meeting's template. A finished meeting's notes are rewritten with it at once (a long
+/// one reuses its part notes, so only the merge runs again); a live one uses it at Stop.
+#[tauri::command]
+fn meeting_set_template(core: CoreState, id: i64, template: String) -> Result<(), String> {
+    set_template(core.inner(), id, &template)
+}
+
+fn set_template(core: &Arc<Core>, id: i64, template: &str) -> Result<(), String> {
+    let known = template.is_empty() || templates::all(&core.settings.read().templates).iter().any(|t| t.t.id == template);
+    if !known {
+        return Err("That template doesn't exist any more.".into());
+    }
+    let m = core.store.meeting(id).ok_or("Meeting not found")?;
+    if m.template == template {
+        return Ok(());
+    }
+    core.store.set_meeting_template(id, template);
+    log::log(format!("meeting {id}: template {template}"));
+    let running = core.meeting.lock().as_ref().is_some_and(|r| r.id == id);
+    let said = !(m.transcript.trim().is_empty() || m.transcript.trim() == "[]");
+    if running || core.store.is_live(id) || (!said && m.my_notes.trim().is_empty()) {
+        return Ok(());
+    }
+    if core.status.lock().llm != "ready" {
+        return Err("The writing AI isn't running yet. The template is saved; the notes will use it next time.".into());
+    }
+    rebuild_notes(core, id);
+    Ok(())
+}
+
+/// Write the notes again from the saved part notes ("Rebuild notes around these"): the parts do
+/// not depend on the notepad or the template, so a long meeting only needs the merge again.
+#[tauri::command]
+fn meeting_rebuild(core: CoreState, id: i64) -> Result<(), String> {
+    if core.meeting.lock().as_ref().is_some_and(|r| r.id == id) {
+        return Ok(());
+    }
+    if core.status.lock().llm != "ready" {
+        return Err("The writing AI isn't running yet.".into());
+    }
+    rebuild_notes(core.inner(), id);
+    Ok(())
+}
+
+/// When the rewrite fails (the AI stopped meanwhile), the notes and title it replaced come back:
+/// a template pick must never cost hand-edited notes.
+fn rebuild_notes(core: &Arc<Core>, id: i64) {
+    let Some(m) = core.store.meeting(id) else { return };
+    core.store.set_meeting_notes(id, "", "");
+    let _ = core.app.emit("meetings-changed", ());
+    let (parts, until) = saved_parts(&m.parts);
+    let c = core.clone();
+    std::thread::spawn(move || {
+        if !write_meeting_notes(&c, id, Some(meeting::LiveNotes::from_saved(parts, until))) {
+            c.store.set_meeting_notes(id, &m.title, &m.notes);
+            let _ = c.app.emit("meetings-changed", ());
+        }
+    });
+}
+
+// ---------- search ----------
+
+#[derive(Serialize)]
+struct SearchHit {
+    id: i64,
+    /// "title" | "people" | "notes" | "said"
+    field: &'static str,
+    /// [before, matched word, after]. All empty: no snippet (people hits, and hits past the 30th).
+    snippet: [String; 3],
+}
+
+/// Snippets are built for this many hits; later hits come without one.
+const SNIPPET_HITS: usize = 30;
+
+/// Meetings that match what was typed in the list's search box, best first.
+#[tauri::command(async)]
+fn meetings_search(core: CoreState, query: String) -> Vec<SearchHit> {
+    search_hits(&core, &query)
+}
+
+fn search_hits(core: &Core, query: &str) -> Vec<SearchHit> {
+    let Some(expr) = search::match_expr(query, search::Mode::All) else { return Vec::new() };
+    let terms = search::terms(query);
+    core.store
+        .search_meetings(&expr, 200)
+        .into_iter()
+        .enumerate()
+        .map(|(i, (id, _))| {
+            let (field, snippet) = match (i < SNIPPET_HITS).then(|| core.store.meeting(id)).flatten() {
+                Some(m) => hit_snippet(&m, &terms),
+                None => ("title", Default::default()),
+            };
+            SearchHit { id, field, snippet }
+        })
+        .collect()
+}
+
+/// Where a meeting matched, and the words around the match, from the original text.
+fn hit_snippet(m: &store::Meeting, terms: &[String]) -> (&'static str, [String; 3]) {
+    for line in [m.title.as_str(), m.cal.as_str()] {
+        if let Some(s) = search::snippet(line, terms) {
+            return ("title", s);
+        }
+    }
+    if m.people.split(" | ").any(|p| search::snippet(p, terms).is_some()) {
+        return ("people", Default::default());
+    }
+    for line in m.notes.lines().chain(m.my_notes.lines()) {
+        let plain = line.trim().trim_start_matches(['#', '-', '*', ' ']).replace("**", "");
+        if let Some(s) = search::snippet(&plain, terms) {
+            return ("notes", s);
+        }
+    }
+    let segs: Vec<meeting::Segment> = serde_json::from_str(&m.transcript).unwrap_or_default();
+    for seg in &segs {
+        // Matched in what was said, not in the speaker's name; the name leads a line's first part.
+        if let Some(mut s) = search::snippet(&seg.text, terms) {
+            if seg.text.starts_with(s[0].as_str()) {
+                s[0] = format!("{}: {}", seg.who, s[0]);
+            }
+            return ("said", s);
+        }
+    }
+    ("title", Default::default())
 }
 
 #[tauri::command]
@@ -1969,6 +2451,8 @@ fn tauri_main() {
             mic_test_start, mic_test_stop, list_mics, open_mic_privacy, test_pill, finish_onboarding, diagnostics, open_log,
             meeting_start, meeting_stop, meeting_status, meetings_list, meeting_get, meeting_delete, meeting_renotes,
             meeting_set_my_notes, meeting_update_my_notes, meeting_save_notes, meeting_ask, meeting_clear_chat,
+            meetings_search, meeting_templates, meeting_set_template, meeting_rebuild, meetings_ask, meetings_ask_log,
+            meetings_ask_clear, meeting_copy, meeting_export, meetings_export_all, exports_info, open_exports_folder,
             call_start, call_dismiss, call_hide, call_open, call_apps, local_hotkey, dot_click, dot_nudge, dot_save,
             app_version, update_status, update_check, update_install, meeting_resume
         ])
@@ -1996,6 +2480,7 @@ fn tauri_main() {
                 paste_seq: AtomicU64::new(0),
             meeting: Mutex::new(None),
                 call: Mutex::new(CallState::default()),
+                compact_gen: AtomicU64::new(0),
                 fix: Mutex::new(None),
                 mic_test: Mutex::new(None),
             });
@@ -2022,6 +2507,11 @@ fn tauri_main() {
             {
                 let c = core.clone();
                 std::thread::spawn(move || recover_meetings(&c));
+            }
+            {
+                // First launch after the update: index every meeting for search (also heals drift).
+                let c = core.clone();
+                std::thread::spawn(move || c.store.backfill_search());
             }
             sync_autostart(app.handle(), settings.autostart);
             if std::env::args().any(|a| a == "--hidden") {
@@ -2074,7 +2564,7 @@ fn tauri_main() {
                                 let segs: Vec<meeting::Segment> = std::fs::read_to_string(&path).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
                                 let live = meeting::simulate_live(&c, &segs);
                                 let t = Instant::now();
-                                let text = match meeting::write_notes(&c, &segs, Some(live), "", &[]) { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
+                                let text = match meeting::write_notes(&c, &segs, Some(live), "", &[], &templates::resolve(&[], "auto")) { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
                                 let _ = std::fs::write(format!("{path}.live.md"), &text);
                                 log::log(format!("test livenotes: end-of-meeting wait {:.1}s", t.elapsed().as_secs_f32()));
                             }
@@ -2083,7 +2573,7 @@ fn tauri_main() {
                                 let path = s[6..].to_string();
                                 let segs: Vec<meeting::Segment> = std::fs::read_to_string(&path).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
                                 let t = Instant::now();
-                                let text = match meeting::write_notes(&c, &segs, None, "", &[]) { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
+                                let text = match meeting::write_notes(&c, &segs, None, "", &[], &templates::resolve(&[], "auto")) { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
                                 let _ = std::fs::write(format!("{path}.notes.md"), &text);
                                 log::log(format!("test notes: {} lines in {:.1}s", segs.len(), t.elapsed().as_secs_f32()));
                             }
@@ -2100,6 +2590,23 @@ fn tauri_main() {
                             } else if let Some((id, q)) = cmd.strip_prefix("ask:").and_then(|r| r.split_once(':')) {
                                 let r = meeting_ask(c.app.state(), id.parse().unwrap_or(0), q.to_string());
                                 log::log(format!("test ask: {}", r.map(|t| t.last().map(|x| format!("[edited {}] {}", x.edited, x.text)).unwrap_or_default()).unwrap_or_else(|e| e)));
+                            } else if let Some(id) = cmd.strip_prefix("export:") {
+                                log::log(format!("test export: {:?}", export_meeting(&c, id.parse().unwrap_or(0))));
+                            } else if let Some(q) = cmd.strip_prefix("askall:") {
+                                match ask_all(&c, q.to_string(), None) {
+                                    Ok(t) => {
+                                        let last = t.last();
+                                        let ids = last.map(|x| x.sources.iter().map(|s| format!("{}{}", s.id, if s.cited { "*" } else { "" })).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+                                        log::log(format!("test askall: [{ids}] {}", last.map(|x| x.text.as_str()).unwrap_or("")));
+                                    }
+                                    Err(e) => log::log(format!("test askall: error {e}")),
+                                }
+                            } else if let Some(q) = cmd.strip_prefix("search:") {
+                                // Ids and where they matched only: snippets would put what was said in the log.
+                                let hits = search_hits(&c, q);
+                                log::log(format!("test search: {} hits {}", hits.len(), hits.iter().map(|h| format!("{}:{}", h.id, h.field)).collect::<Vec<_>>().join(" ")));
+                            } else if let Some((id, t)) = cmd.strip_prefix("template:").and_then(|r| r.split_once(':')) {
+                                log::log(format!("test template: {:?}", set_template(&c, id.parse().unwrap_or(0), t)));
                             } else if let Some(p) = cmd.strip_prefix("wav:") {
                                 // A recorded clip through the real dictation path (pill, speech, AI, paste).
                                 match audio::load_wav(p) {
@@ -2165,4 +2672,77 @@ fn _assert_send_sync() {
     fn is<T: Send + Sync>() {}
     is::<Core>();
     let _ = Binding::mouse(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration as Days, Local};
+
+    /// A store with meetings (days ago, title, what was said), newest first like `meetings()`.
+    fn library(rows: &[(i64, &str, &str)]) -> (Store, Vec<store::Meeting>) {
+        let store = Store::from_connection(rusqlite::Connection::open_in_memory().unwrap()).unwrap();
+        for (days, title, said) in rows {
+            let id = store.begin_meeting(&(Local::now() - Days::days(*days)).to_rfc3339());
+            let seg = meeting::Segment { who: "Them".into(), start: 1.0, end: 3.0, text: said.to_string() };
+            store.update_meeting_recording(id, 600.0, &serde_json::to_string(&vec![seg]).unwrap(), "");
+            store.set_meeting_live(id, false);
+            store.set_meeting_notes(id, title, "");
+        }
+        let scope = store.meetings();
+        (store, scope)
+    }
+
+    fn weather(n: usize, days: i64) -> Vec<(i64, &'static str, &'static str)> {
+        (0..n).map(|_| (days, "Weekly sync", "small talk about the weather")).collect()
+    }
+
+    #[test]
+    fn a_new_question_searches_fresh() {
+        let mut rows = vec![(3, "Launch review", "the release moves to Thursday"), (2, "Vendor call", "pricing goes up by ten percent")];
+        rows.extend(weather(6, 1));
+        let (store, scope) = library(&rows);
+        let now = Local::now();
+        let first = pick_meetings(&store, &scope, "What did we decide about the release?", "", false, &[], 6, now);
+        assert_eq!(first.chosen, vec![1]);
+        assert!(first.ranked && !first.followup);
+        // The next day, another one-topic question: searched on its own, not the release meeting again.
+        let second = pick_meetings(&store, &scope, "What did we decide about pricing?", "What did we decide about the release?", false, &first.chosen, 6, now);
+        assert_eq!(second.chosen, vec![2]);
+        assert!(!second.followup);
+        // A follow-up that matches nothing itself stays on what was read.
+        let third = pick_meetings(&store, &scope, "and Alex?", "What did we decide about pricing?", false, &second.chosen, 6, now);
+        assert_eq!(third.chosen, vec![2]);
+        assert!(third.followup);
+    }
+
+    #[test]
+    fn no_topic_after_a_long_break_reads_the_newest() {
+        let (store, scope) = library(&weather(8, 30));
+        let now = Local::now();
+        let p = pick_meetings(&store, &scope, "What is still open?", "", false, &[], 6, now);
+        assert!(!p.empty_period);
+        assert_eq!(p.chosen, vec![8, 7, 6, 5, 4, 3]);
+        // A real period with nothing in it is said as such.
+        let p = pick_meetings(&store, &scope, "What did I agree to do this week?", "", false, &[], 6, now);
+        assert!(p.empty_period && p.chosen.is_empty());
+    }
+
+    #[test]
+    fn a_topic_in_a_period_is_ranked_within_it() {
+        let mut rows = vec![(40, "Old vendor call", "pricing was discussed long ago"), (5, "Vendor call", "pricing goes up by ten percent")];
+        rows.extend(weather(7, 1));
+        let (store, scope) = library(&rows);
+        let now = Local::now();
+        let p = pick_meetings(&store, &scope, "What did Sam say about pricing this week?", "", false, &[], 6, now);
+        // The matching meeting of the week comes first even though it is the oldest one in it;
+        // the one outside the week is not read.
+        assert_eq!(p.chosen.first(), Some(&2));
+        assert!(p.ranked && !p.chosen.contains(&1));
+        assert_eq!(p.chosen.len(), 6);
+        // Ticked meetings that fit are read whole, time word or not.
+        let ticked: Vec<store::Meeting> = store.meetings().into_iter().filter(|m| m.id == 1 || m.id == 3).collect();
+        let p = pick_meetings(&store, &ticked, "What happened this week?", "", true, &[], 6, now);
+        assert_eq!(p.chosen, vec![3, 1]);
+    }
 }

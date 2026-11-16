@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type CallApp, type Settings as S, type Status } from "../../lib/api";
+import { api, type CallApp, type ExportsInfo, type Settings as S, type Status } from "../../lib/api";
 import ShortcutPicker from "../ShortcutPicker";
 import CopyDiagnostics from "../CopyDiagnostics";
 import MicPicker from "../MicPicker";
@@ -7,6 +7,7 @@ import { LANGUAGES } from "../../lib/languages";
 import type { SectionId } from "../Main";
 import Engine from "./Engine";
 import Training from "./Training";
+import Templates from "./Templates";
 import { Head, Row, Segmented, ToggleRow, type Update } from "./ui";
 
 const MODE_HELP: Record<S["dictate_mode"], string> = {
@@ -97,6 +98,38 @@ function SnippetEditor({ settings, update }: { settings: S; update: Update }) {
   );
 }
 
+/** Save every meeting as a Markdown file in a fixed folder (Documents\Seda\Meetings). */
+function ExportRow() {
+  const [info, setInfo] = useState<ExportsInfo | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState<number | null>(null);
+  const [err, setErr] = useState("");
+  useEffect(() => { api.exportsInfo().then(setInfo).catch(() => {}); }, []);
+  const run = async () => {
+    setBusy(true); setErr(""); setSaved(null);
+    try { const r = await api.meetingsExportAll(); setSaved(r.count); } catch (e) { setErr(String(e)); }
+    setBusy(false);
+  };
+  const help = (
+    <>
+      Saves every meeting as a Markdown file in <span className="path-inline" dir="ltr">{info?.dir ?? "Documents\\Seda\\Meetings"}</span>: notes, your notes and the transcript.
+      {info?.cloud && " This folder is inside OneDrive, so the exported files sync to your OneDrive account."}
+    </>
+  );
+  return (
+    <Row title="Export meetings" help={help}>
+      <button className="btn" disabled={busy} onClick={run}>{busy ? "Exporting…" : "Export all"}</button>
+      {saved !== null && (
+        <>
+          <span className="faint">Saved {saved} meeting{saved === 1 ? "" : "s"}</span>
+          <button className="link" onClick={() => { api.openExportsFolder().catch((e) => setErr(String(e))); }}>Open folder</button>
+        </>
+      )}
+      {err && <div className="error-text ctl-line">{err}</div>}
+    </Row>
+  );
+}
+
 const DETECT_HELP: Record<S["meeting_detect"], string> = {
   ask: "When a call starts, a small card asks whether to take notes.",
   auto: "Every call is recorded and summarised automatically. Stops when the call ends.",
@@ -162,6 +195,9 @@ export default function Settings({ settings, update, status, go }: { settings: S
           <CallApps settings={settings} update={update} />
         </Row>
       )}
+      <Row title="Note templates" help="Sections Seda fills in when it writes the notes. Pick one during a meeting or afterwards." top>
+        <Templates settings={settings} update={update} />
+      </Row>
 
       <div className="group-label">General</div>
       <Row title="Your name" help="Seda greets you, labels you in transcripts, and knows “Alex, can you…” in a meeting is a task for you.">
@@ -190,6 +226,7 @@ export default function Settings({ settings, update, status, go }: { settings: S
             on={settings.keep_meeting_audio}
             onChange={(v) => update("keep_meeting_audio", v)}
           />
+          <ExportRow />
           <Row title="Your email" help={'Say "my email" and Seda pastes this address.'}>
             <EmailField settings={settings} update={update} />
           </Row>
