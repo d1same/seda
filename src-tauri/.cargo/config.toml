@@ -1,8 +1,24 @@
 # Build settings for Windows. Adjust the paths below to where these tools are installed on your PC.
 [build]
-target-dir = "C:/s"  # short: the Vulkan shader build hits Windows' 260-character path limit otherwise
+# Z: is the network folder \\10.1.20.4\Ai Projects. Windows counts that full
+# name, and a folder can be at most 248 characters. These paths are relative
+# to src-tauri, so they land next to the repo: Z:\Projects\Whisper\b today,
+# or Z:\Projects\Seda\b after the folder is renamed.
+target-dir = "../../b"
 
 [env]
+# Dev uses shader-dev. A release build sets SEDA_SHADER_DIR to shader.
+# One shared folder makes CMake stop: the debug copy of whisper.cpp
+# does not match the release copy that wrote the cache.
+SEDA_SHADER_DIR = { value = "../../shader-dev", relative = true }
 VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"
 CMAKE = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe"
 LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
+# MSBuild's file tracker dies on the Vulkan test compile (FTK1011).
+# Turning tracking off is the fix whisper-rs documents.
+TrackFileAccess = "false"
+# /FS must not be passed as CMAKE_C_FLAGS or CMAKE_CXX_FLAGS. whisper-rs-sys
+# forwards every CMAKE_ variable, and the cmake crate then skips its own flags,
+# including /utf-8. CL is added by the compiler on top of those flags.
+CL = "/FS"
+_CL_ = "/FS"

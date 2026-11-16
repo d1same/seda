@@ -6,6 +6,10 @@ static LOCK: Mutex<()> = Mutex::new(());
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 pub fn log(msg: impl AsRef<str>) {
+    // Unit tests never write to the real log in %APPDATA%.
+    if cfg!(test) {
+        return;
+    }
     let _g = LOCK.lock();
     let path = crate::settings::data_dir().join("seda.log");
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_BYTES) {

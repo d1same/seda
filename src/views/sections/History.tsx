@@ -1,5 +1,5 @@
-import { useCallback, useState } from "react";
-import { api, type HistoryItem } from "../../lib/api";
+import { useCallback, useEffect, useState } from "react";
+import { api, bindingShort, type HistoryItem } from "../../lib/api";
 import { useOnHistory } from "../../lib/hooks";
 import HistoryRow, { dayOf } from "./HistoryRow";
 import { Head } from "./ui";
@@ -9,6 +9,12 @@ export default function History({ open }: { open: (item: HistoryItem) => void })
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [q, setQ] = useState("");
   const sel = useSelection();
+  // For the empty state: name the user's own dictation shortcut.
+  const [keyName, setKeyName] = useState("Mouse 4");
+  const [verb, setVerb] = useState("Hold");
+  useEffect(() => {
+    api.getSettings().then((s) => { setKeyName(bindingShort(s.dictate_binding)); setVerb(s.dictate_mode === "toggle" ? "Tap" : "Hold"); }).catch(() => {});
+  }, []);
   const load = useCallback(() => { api.history(500).then(setItems); }, []);
   useOnHistory(load);
   const needle = q.trim().toLowerCase();
@@ -26,19 +32,25 @@ export default function History({ open }: { open: (item: HistoryItem) => void })
     <>
       <Head n="History" title="History" right={
         <div className="head-actions">
-          {!sel.on && <input className="field" style={{ width: 200 }} dir="auto" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />}
           {items.length > 0 && <SelectBar sel={sel} all={shown.map((i) => i.id)} what="dictation" onDelete={async (ids) => { for (const id of ids) await api.deleteHistory(id); load(); }} />}
         </div>
       }>
         Everything you dictated. Open one to read all of it, copy it, or correct it so Seda learns.
       </Head>
+      {items.length > 0 && <input className="field search-field" dir="auto" placeholder="Search dictations…" aria-label="Search dictations" value={q} onChange={(e) => setQ(e.target.value)} />}
       {days.map(([day, list]) => (
         <div key={day}>
-          <div className="label day-label">{day}</div>
+          <div className="kicker day-label">{day}</div>
           {list.map((i) => <HistoryRow key={i.id} item={i} open={open} sel={sel} />)}
         </div>
       ))}
-      {shown.length === 0 && <div className="empty"><div className="big">{q ? "No matches." : "No dictations yet."}</div></div>}
+      {items.length === 0 && (
+        <div className="empty">
+          <div className="big">Nothing dictated yet</div>
+          {verb} <b>{keyName}</b> in any app and talk. It lands here.
+        </div>
+      )}
+      {items.length > 0 && shown.length === 0 && <div className="empty"><div className="big">No matches</div></div>}
     </>
   );
 }

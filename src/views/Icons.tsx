@@ -20,6 +20,11 @@ const P: Record<string, string> = {
   wand: "M3 13 10 6M9 3.5v1.5M12.5 7H11M11.5 4.5l-1 1M6 3.5l.5 1",
   plus: "M8 3.5v9M3.5 8h9",
   record: "M8 3a5 5 0 1 1 0 10A5 5 0 0 1 8 3zM8 6a2 2 0 1 1 0 4 2 2 0 0 1 0-4z",
+  more: "M3.5 7.4a.6.6 0 1 1 0 1.2.6.6 0 0 1 0-1.2zM8 7.4a.6.6 0 1 1 0 1.2.6.6 0 0 1 0-1.2zM12.5 7.4a.6.6 0 1 1 0 1.2.6.6 0 0 1 0-1.2z",
+  wave: "M4 6.5v3M8 3.5v9M12 5.5v5",
+  chevron: "M4 6.5 8 10.5 12 6.5",
+  save: "M8 2.5v8M4.5 7.5 8 11l3.5-3.5M3 13.5h10",
+  folder: "M2.5 4.5h4l1.2 1.5h5.8v6.5h-11z",
 };
 
 /** A button with an icon and a short label (label optional: then it shows as a tooltip). */

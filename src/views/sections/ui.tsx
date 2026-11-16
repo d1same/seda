@@ -7,7 +7,7 @@ export function Head({ n, title, children, right }: { n: string; title: string; 
   return (
     <div className="section-head">
       <div>
-        {n !== title && <div className="label">{n}</div>}
+        {n !== title && <div className="kicker">{n}</div>}
         <h1>{title}</h1>
         {children && <p>{children}</p>}
       </div>
@@ -37,7 +37,7 @@ export function ToggleRow({ title, help, on, onChange }: { title: string; help?:
       </div>
       <div className="ctl">
         <span className={`switch ${on ? "on" : ""}`} />
-        <span className="label">{on ? "On" : "Off"}</span>
+        <span className="sr-only">{on ? "On" : "Off"}</span>
       </div>
     </div>
   );

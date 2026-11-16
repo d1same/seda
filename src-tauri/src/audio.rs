@@ -6,6 +6,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 pub const RATE: u32 = 16_000;
 /// Device name meaning "what this PC is playing" (loopback of the default speakers): the other
@@ -17,8 +18,39 @@ pub struct Recording {
     done_rx: Receiver<Result<Vec<f32>>>,
     level: Arc<AtomicU32>,
     /// Captured audio so far at the device rate, shared so it can be transcribed while you talk.
-    buf: Arc<Mutex<Vec<f32>>>,
+    buf: Arc<Mutex<Buf>>,
     rate: u32,
+    loopback: bool,
+    /// When the stream started: sample 0 of this recording. Lines a loopback track up with the mic.
+    pub started: Instant,
+}
+
+/// How far a loopback track may fall behind the clock before the gap is filled with silence. The
+/// same in the audio callback and in `drain`, so audio after a pause lands where it was played.
+#[allow(non_snake_case)]
+fn GAP_SLACK(rate: u32) -> usize {
+    rate as usize / 20
+}
+
+/// The recorder's buffer and how many device-rate samples it has produced in total.
+struct Buf {
+    data: Vec<f32>,
+    written: usize,
+}
+
+impl Buf {
+    /// Loopback only: Windows sends nothing while nothing plays. Count that time as silence (up to
+    /// 50 ms ago, so audio still on its way isn't overtaken) so the track keeps time with the clock.
+    fn fill_gap(&mut self, started: Instant, rate: u32) {
+        let expected = (started.elapsed().as_secs_f64() * rate as f64) as usize;
+        let gap = expected.saturating_sub(self.written);
+        if gap > GAP_SLACK(rate) {
+            let pad = gap - GAP_SLACK(rate);
+            let n = self.data.len();
+            self.data.resize(n + pad, 0.0);
+            self.written += pad;
+        }
+    }
 }
 
 impl Recording {
@@ -27,16 +59,21 @@ impl Recording {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
-    /// Everything recorded so far, as 16 kHz mono (recording continues).
-    pub fn snapshot(&self) -> Vec<f32> {
-        let raw = self.buf.lock().clone();
-        resample(&raw, self.rate, RATE)
-    }
-
     /// Takes everything recorded since the last call, as 16 kHz mono (recording continues).
     /// For long recordings (meetings), so the buffer never grows.
     pub fn drain(&self) -> Vec<f32> {
-        let raw = std::mem::take(&mut *self.buf.lock());
+        let raw = {
+            let mut b = self.buf.lock();
+            if self.loopback {
+                b.fill_gap(self.started, self.rate);
+            }
+            // Only whole output samples: the device samples left over stay for the next drain, so
+            // nothing is lost between drains and the mic and speaker tracks never drift apart.
+            let step = self.rate as f64 / RATE as f64;
+            let out = (b.data.len() as f64 / step) as usize;
+            let take = ((out as f64 * step).ceil() as usize).min(b.data.len());
+            b.data.drain(..take).collect::<Vec<f32>>()
+        };
         resample(&raw, self.rate, RATE)
     }
 
@@ -52,6 +89,11 @@ pub fn input_devices() -> Vec<String> {
         .input_devices()
         .map(|ds| ds.filter_map(|d| d.name().ok()).collect())
         .unwrap_or_default()
+}
+
+/// The speakers Windows plays to by default (what a call usually comes out of).
+pub fn default_output_name() -> Option<String> {
+    cpal::default_host().default_output_device().and_then(|d| d.name().ok())
 }
 
 /// Names of the speakers/headsets Windows offers (all of them are recorded in a meeting).
@@ -98,33 +140,34 @@ pub fn start(device: &str) -> Result<Recording> {
     let device = device.to_string();
     let (stop_tx, stop_rx) = bounded::<()>(1);
     let (done_tx, done_rx) = bounded(1);
-    let (ready_tx, ready_rx) = bounded::<Result<u32>>(1);
+    let (ready_tx, ready_rx) = bounded::<Result<(u32, Instant)>>(1);
     let level = Arc::new(AtomicU32::new(0));
     let lvl = level.clone();
-    let buf = Arc::new(Mutex::new(Vec::<f32>::with_capacity(48_000 * 30)));
+    let buf = Arc::new(Mutex::new(Buf { data: Vec::with_capacity(48_000 * 30), written: 0 }));
+    let loopback = device.starts_with(SYSTEM);
     let shared = buf.clone();
 
     std::thread::spawn(move || {
         let built = build_stream(&device, buf.clone(), lvl);
-        let (stream, rate) = match built {
+        let (stream, rate, started) = match built {
             Ok(v) => v,
             Err(e) => {
                 let _ = ready_tx.send(Err(e));
                 return;
             }
         };
-        let _ = ready_tx.send(Ok(rate));
+        let _ = ready_tx.send(Ok((rate, started)));
         let _ = stop_rx.recv();
         drop(stream);
-        let samples = std::mem::take(&mut *buf.lock());
+        let samples = std::mem::take(&mut buf.lock().data);
         let _ = done_tx.send(Ok(resample(&samples, rate, RATE)));
     });
 
-    let rate = ready_rx.recv().map_err(|_| anyhow!("recorder thread died"))??;
-    Ok(Recording { stop_tx, done_rx, level, buf: shared, rate })
+    let (rate, started) = ready_rx.recv().map_err(|_| anyhow!("recorder thread died"))??;
+    Ok(Recording { stop_tx, done_rx, level, buf: shared, rate, loopback, started })
 }
 
-fn build_stream(name: &str, buf: Arc<Mutex<Vec<f32>>>, level: Arc<AtomicU32>) -> Result<(cpal::Stream, u32)> {
+fn build_stream(name: &str, buf: Arc<Mutex<Buf>>, level: Arc<AtomicU32>) -> Result<(cpal::Stream, u32, Instant)> {
     // "@system" = the default speakers; "@system:<name>" = that output device (headset, dock, …).
     let loopback = name.starts_with(SYSTEM);
     let device = if loopback {
@@ -150,23 +193,22 @@ fn build_stream(name: &str, buf: Arc<Mutex<Vec<f32>>>, level: Arc<AtomicU32>) ->
 
     // Windows sends loopback audio only while something is playing. Fill the gaps with silence so
     // the track stays in step with the clock (and with the mic track).
-    let started = std::time::Instant::now();
-    let mut written = 0usize; // samples pushed so far (the buffer itself may be drained)
-    let mut push = move |mono: Vec<f32>| {
+    let started = Instant::now();
+    let push = move |mono: Vec<f32>| {
         let rms = (mono.iter().map(|s| s * s).sum::<f32>() / mono.len().max(1) as f32).sqrt();
         level.store((rms * 6.0).min(1.0).to_bits(), Ordering::Relaxed);
         let mut b = buf.lock();
         if loopback {
             let expected = (started.elapsed().as_secs_f64() * rate as f64) as usize;
-            let gap = expected.saturating_sub(written + mono.len());
-            if gap > rate as usize / 5 {
-                let n = b.len();
-                b.resize(n + gap, 0.0);
-                written += gap;
+            let gap = expected.saturating_sub(b.written + mono.len());
+            if gap > GAP_SLACK(rate) {
+                let n = b.data.len();
+                b.data.resize(n + gap, 0.0);
+                b.written += gap;
             }
         }
-        written += mono.len();
-        b.extend_from_slice(&mono);
+        b.written += mono.len();
+        b.data.extend_from_slice(&mono);
     };
     let to_mono = move |frame_iter: &mut dyn Iterator<Item = f32>, len: usize| -> Vec<f32> {
         let mut out = Vec::with_capacity(len / channels);
@@ -204,7 +246,7 @@ fn build_stream(name: &str, buf: Arc<Mutex<Vec<f32>>>, level: Arc<AtomicU32>) ->
         f => return Err(anyhow!("Unsupported microphone format {f:?}")),
     };
     stream.play()?;
-    Ok((stream, rate))
+    Ok((stream, rate, started))
 }
 
 /// Read any WAV file as 16 kHz mono f32.
