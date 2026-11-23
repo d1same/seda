@@ -2,9 +2,20 @@
 
 # Seda
 
-Private voice typing and meeting notes for Windows. Everything runs on your own computer: nothing you say is uploaded.
+Private voice typing and call/meeting notes for **Windows** and **Android**. Everything runs locally on your own device: nothing you say is uploaded.
 
-**[Download the installer](https://github.com/d1same/seda/releases/latest)** (Windows 10/11, 64-bit). That file is what other people install. They run it; they do not need this repository.
+## Download
+
+Both Windows and Android share matching release versions on the **[Latest Release](https://github.com/d1same/seda/releases/latest)** page:
+
+| Platform | File | Requirements | Updates |
+|---|---|---|---|
+| **Windows** | `Seda_<version>_x64-setup.exe` | Windows 10/11 (64-bit) | Built-in signed auto-updater |
+| **Android** | `Seda-Android-<version>-arm64.apk` | Android 9+ (ARM64, foldable-ready) | Built-in in-app updater |
+
+Users only need the installer or APK from [Releases](https://github.com/d1same/seda/releases/latest) — they do not need this repository.
+
+### Windows highlights
 
 - **Dictation anywhere.** Hold a shortcut (any key or mouse button, e.g. Mouse 4) and talk. The capsule shows the words while you are still holding. Let go and they paste at the cursor right away. Say "no wait…" and Seda drops the part you took back.
 - **English + one more language.** Mix them in the same sentence. Persian has its own fine-tuned speech model; Chinese, Hindi, Spanish, Arabic, French, Portuguese, Russian, German, Japanese and Greek use the multilingual one.
@@ -14,6 +25,13 @@ Private voice typing and meeting notes for Windows. Everything runs on your own 
 - **Meetings.** Records you (microphone) and everyone else (the computer's audio), transcribes live, and writes notes with decisions and action items when the call ends. No bot joins your call. Seda notices when Teams, Zoom, Meet and others start a call and offers to take notes. If Outlook is already open, the meeting takes the appointment's name, and one other person is named in the transcript. Search also matches what was said.
 - **Ask about a meeting.** "What did I agree to do?", "Write a follow-up email", "Make the notes shorter": answers and edits come from the local AI.
 - **Learns from you.** Correct a dictation once and Seda remembers the fix; add names and terms it should always spell right.
+
+### Android highlights
+
+- **100% on-device phone call & meeting notes.** Runs `whisper.cpp` + Silero VAD + `llama.cpp` (Gemma 4 E2B or E4B) directly on your phone with zero cloud upload.
+- **Granola-style call notes.** Built-in **Phone call** template, clickable task checkboxes, "My notes" merge, FTS5 search, and cited Ask across all calls.
+- **Automatic call capture & import.** Built-in Call Recording Helper for Android 10–15, automatic call-recording folder import, 1-tap **Share → Seda** for any audio file, and a background foreground-service mic recorder.
+- **Foldable-ready & self-updating.** Automatically switches to a two-pane split view on unfoldable screens (e.g., Honor Magic V5) and checks GitHub Releases for 1-tap in-app updates.
 
 ## How it works
 
