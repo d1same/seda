@@ -160,7 +160,10 @@ impl Asr {
         if lang.is_some() && secs < 25.0 {
             params.set_audio_ctx(((secs * 50.0) as i32 + 250).min(1500));
         }
-        let prompt = vocab.join("، ");
+        let sep = if language == "fa" { "، " } else { ", " };
+        // Whisper silently truncates initial_prompt past 224 tokens; keep the first 40 entries
+        // (user's name + most relevant terms) so important names are never pushed out.
+        let prompt = vocab.iter().take(40).cloned().collect::<Vec<_>>().join(sep);
         if !prompt.is_empty() {
             params.set_initial_prompt(&prompt);
         }
@@ -174,12 +177,16 @@ impl Asr {
         state.full(params, &buf).map_err(|e| anyhow!("Transcription failed: {e:?}"))?;
         let (mut sum, mut n) = (0.0f32, 0u32);
         let mut parts = Vec::new();
-        let mut no_speech: f32 = 0.0;
-        for (si, seg) in state.as_iter().enumerate() {
-            if si == 0 {
-                no_speech = seg.no_speech_probability();
+        // Track the lowest no_speech across segments that produced text: checking only segment 0
+        // dropped real speech whenever a clip started with a brief breath, click, or noise burst.
+        let mut min_no_speech: Option<f32> = None;
+        for seg in state.as_iter() {
+            let seg_text = seg.to_string();
+            let p_no_speech = seg.no_speech_probability();
+            if !seg_text.trim().is_empty() {
+                min_no_speech = Some(min_no_speech.map_or(p_no_speech, |m| m.min(p_no_speech)));
             }
-            parts.push(seg.to_string());
+            parts.push(seg_text);
             for i in 0..seg.n_tokens() {
                 if let Some(tok) = seg.get_token(i) {
                     let special = tok.to_str_lossy().map(|s| s.starts_with("[_") || s.starts_with("<|")).unwrap_or(true);
@@ -190,6 +197,7 @@ impl Asr {
                 }
             }
         }
+        let no_speech = min_no_speech.unwrap_or(1.0);
         let conf = if n == 0 { 0.0 } else { sum / n as f32 };
         let text = parts.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
         let text = collapse_repeats(&text);

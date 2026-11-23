@@ -1,14 +1,15 @@
 //! Windows helpers: paste/copy via simulated keystrokes, foreground-app detection,
 //! and showing a window without stealing focus.
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HWND};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, MapVirtualKeyW,
-    SendInput, VIRTUAL_KEY,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
+    MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GWL_STYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId,
+    GWL_EXSTYLE, GWL_STYLE, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId,
     SW_HIDE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_BORDER, WS_CAPTION, WS_DLGFRAME,
     WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
@@ -16,27 +17,68 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PWSTR;
 
-const VK_CONTROL: u16 = 0x11;
 const VK_SHIFT: u16 = 0x10;
-const VK_MENU: u16 = 0x12;
+const VK_CONTROL: u16 = 0x11;
+const VK_LSHIFT: u16 = 0xA0;
+const VK_RSHIFT: u16 = 0xA1;
+const VK_RCONTROL: u16 = 0xA3;
+const VK_LMENU: u16 = 0xA4;
+const VK_RMENU: u16 = 0xA5;
 const VK_LWIN: u16 = 0x5B;
+const VK_RWIN: u16 = 0x5C;
+
+/// Bumped on every clipboard write Seda makes, so an older paste's delayed restore never overwrites
+/// a newer paste or copy.
+static CLIPBOARD_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// Navigation/system keys whose hardware scan codes carry the 0xE0 extended prefix. Without
+/// `KEYEVENTF_EXTENDEDKEY`, `VK_LEFT` (scan 0x4B) is read by RDP and NumLock-sensitive apps as
+/// Numpad 4 instead of Left Arrow.
+fn is_extended_key(vk: u16) -> bool {
+    matches!(
+        vk,
+        0x21..=0x28 // PageUp, PageDown, End, Home, Left, Up, Right, Down
+        | 0x2D | 0x2E // Insert, Delete
+        | 0x5B | 0x5C | 0x5D // LWin, RWin, Apps
+        | 0xA3 | 0xA5 // RCtrl, RAlt
+    )
+}
 
 fn key(vk: u16, up: bool) -> INPUT {
-    // Include the hardware scan code: some apps (games, remote desktops, some Electron apps)
-    // ignore keystrokes that only carry a virtual-key code.
+    // Include the hardware scan code and extended flag: remote desktops, games, and some Electron
+    // apps route by scan code and break when extended keys omit KEYEVENTF_EXTENDEDKEY.
     let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u16;
+    let mut flags = KEYBD_EVENT_FLAGS(0);
+    if is_extended_key(vk) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    if up {
+        flags |= KEYEVENTF_KEYUP;
+    }
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(vk),
                 wScan: scan,
-                dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                dwFlags: flags,
                 time: 0,
                 dwExtraInfo: crate::hotkey::SEDA_MARK,
             },
         },
     }
+}
+
+fn send_keys(inputs: &[INPUT]) {
+    if !inputs.is_empty() {
+        unsafe {
+            SendInput(inputs, std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+}
+
+fn key_is_down(vk: u16) -> bool {
+    unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
 
 /// True when the focused window belongs to a program running as administrator. Windows blocks
@@ -82,27 +124,36 @@ fn self_is_elevated() -> bool {
     }
 }
 
-/// Send Ctrl+<letter>, first releasing any modifiers the user may still be holding.
-fn ctrl_combo(letter: u16) {
-    let inputs = [
-        key(VK_SHIFT, true),
-        key(VK_MENU, true),
-        key(VK_LWIN, true),
-        key(VK_CONTROL, false),
-        key(letter, false),
-        key(letter, true),
-        key(VK_CONTROL, true),
-    ];
-    unsafe {
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+/// Send Ctrl+<letter>, first releasing any conflicting modifiers that are currently held down.
+/// `slow`: slightly wider pauses between key transitions so remote desktop sessions (RDP, Citrix,
+/// VNC) don't drop or coalesce the chord.
+fn ctrl_combo(letter: u16, slow: bool) {
+    let mut release = Vec::new();
+    for vk in [VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN, VK_RCONTROL] {
+        if key_is_down(vk) {
+            release.push(key(vk, true));
+        }
     }
+    if !release.is_empty() {
+        send_keys(&release);
+        std::thread::sleep(Duration::from_millis(if slow { 25 } else { 10 }));
+    }
+    let gap = Duration::from_millis(if slow { 25 } else { 10 });
+    send_keys(&[key(VK_CONTROL, false)]);
+    std::thread::sleep(gap);
+    send_keys(&[key(letter, false)]);
+    std::thread::sleep(gap);
+    send_keys(&[key(letter, true)]);
+    std::thread::sleep(gap);
+    send_keys(&[key(VK_CONTROL, true)]);
 }
 
 /// Paste `text` at the cursor of the focused app.
 ///
-/// The previous clipboard comes back only after 1.5 s, and only if the clipboard still holds our
-/// text: browsers and Electron apps (Teams, Slack, Discord…) read the clipboard a moment after
-/// Ctrl+V, and restoring sooner made them paste the OLD clipboard instead.
+/// The previous clipboard comes back only after a delay, and only if the clipboard still holds our
+/// text and no newer Seda paste/copy ran: browsers, Electron apps (Teams, Slack, Discord…) and RDP
+/// sessions read the clipboard asynchronously after Ctrl+V, and restoring sooner made them paste
+/// the OLD clipboard instead.
 /// Put text on the clipboard without it landing in Windows clipboard history (Win+V) or the cloud
 /// clipboard: what you dictate shouldn't be kept or synced anywhere.
 fn set_private(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
@@ -116,6 +167,10 @@ const VK_LEFT: u16 = 0x25;
 /// The caret has to still be at the end of the draft this just typed.
 pub fn replace_tail(old: &str, new: &str) -> anyhow::Result<()> {
     use unicode_segmentation::UnicodeSegmentation;
+    let hwnd = foreground();
+    if is_console(hwnd) || is_remote_desktop_hwnd(hwnd) {
+        anyhow::bail!("in-place replacement is disabled in remote desktop and terminal windows");
+    }
     if foreground_is_elevated() {
         copy_private(new)?;
         anyhow::bail!("This window runs as administrator, so Windows blocks typing into it. The text is on your clipboard — press Ctrl+V.");
@@ -128,7 +183,7 @@ pub fn replace_tail(old: &str, new: &str) -> anyhow::Result<()> {
         anyhow::bail!("nothing to replace");
     }
     // Check the draft is really what sits before the caret (the user may have clicked or typed
-    // since). Apps without a text pattern return nothing; those are trusted as before.
+    // since). Apps without a text pattern return nothing; those rely on the caller's user-input guard.
     let before = text_before_caret(old.chars().count() + 8);
     let norm = |t: &str| t.replace('\r', "").trim_end().to_string();
     // A long draft is read back only partly (the reader stops at 800 characters): compare what fits.
@@ -138,21 +193,31 @@ pub fn replace_tail(old: &str, new: &str) -> anyhow::Result<()> {
         anyhow::bail!("the draft is no longer just before the cursor; leaving the first paste");
     }
     select_back(n);
-    std::thread::sleep(Duration::from_millis(40));
-    paste(new)
+    std::thread::sleep(Duration::from_millis(50));
+    paste_for(new, false)
 }
 
 fn select_back(n: usize) {
-    let mut inputs = Vec::with_capacity(n * 2 + 2);
-    inputs.push(key(VK_SHIFT, false));
-    for _ in 0..n {
-        inputs.push(key(VK_LEFT, false));
-        inputs.push(key(VK_LEFT, true));
+    // Send Shift+Left in small chunks with KEYEVENTF_EXTENDEDKEY (set by `key`) so long drafts
+    // never overflow the target app's input queue or drop selection steps.
+    send_keys(&[key(VK_SHIFT, false)]);
+    std::thread::sleep(Duration::from_millis(10));
+    let mut remaining = n;
+    while remaining > 0 {
+        let batch = remaining.min(24);
+        let mut inputs = Vec::with_capacity(batch * 2);
+        for _ in 0..batch {
+            inputs.push(key(VK_LEFT, false));
+            inputs.push(key(VK_LEFT, true));
+        }
+        send_keys(&inputs);
+        remaining -= batch;
+        if remaining > 0 {
+            std::thread::sleep(Duration::from_millis(4));
+        }
     }
-    inputs.push(key(VK_SHIFT, true));
-    unsafe {
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-    }
+    std::thread::sleep(Duration::from_millis(10));
+    send_keys(&[key(VK_SHIFT, true)]);
 }
 
 /// The text already in the focused box, just before the caret. Empty when the app has no text
@@ -187,19 +252,31 @@ pub fn text_before_caret(max_chars: usize) -> String {
 }
 
 pub fn paste(text: &str) -> anyhow::Result<()> {
+    paste_for(text, is_remote_desktop_hwnd(foreground()))
+}
+
+pub fn paste_for(text: &str, remote: bool) -> anyhow::Result<()> {
     if foreground_is_elevated() {
         let mut cb = arboard::Clipboard::new()?;
+        CLIPBOARD_GEN.fetch_add(1, Ordering::SeqCst);
         set_private(&mut cb, text)?;
         anyhow::bail!("This window runs as administrator, so Windows blocks typing into it. The text is on your clipboard — press Ctrl+V.");
     }
     let mut cb = arboard::Clipboard::new()?;
     let previous = cb.get_text().ok();
+    let generation = CLIPBOARD_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     set_private(&mut cb, text)?;
-    std::thread::sleep(Duration::from_millis(60));
-    ctrl_combo(0x56); // V
+    // RDP syncs the host clipboard over a virtual channel (`rdpclip.exe`), which takes ~150-300 ms
+    // rather than ~50 ms locally. Give it enough time so Ctrl+V reads our new text once.
+    std::thread::sleep(Duration::from_millis(if remote { 220 } else { 70 }));
+    ctrl_combo(0x56, remote); // V
     let ours = text.to_string();
+    let restore_ms = if remote { 2500 } else { 1500 };
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(1500));
+        std::thread::sleep(Duration::from_millis(restore_ms));
+        if CLIPBOARD_GEN.load(Ordering::SeqCst) != generation {
+            return;
+        }
         let Ok(mut cb) = arboard::Clipboard::new() else { return };
         if cb.get_text().ok().as_deref() == Some(ours.as_str()) {
             if let Some(p) = previous {
@@ -212,14 +289,20 @@ pub fn paste(text: &str) -> anyhow::Result<()> {
 
 /// Copy the current selection of the focused app. Returns None if nothing is selected.
 pub fn copy_selection() -> Option<String> {
+    let remote = is_remote_desktop_hwnd(foreground());
     let mut cb = arboard::Clipboard::new().ok()?;
     let previous = cb.get_text().ok();
     let marker = "\u{2063}seda-empty\u{2063}";
+    CLIPBOARD_GEN.fetch_add(1, Ordering::SeqCst);
     set_private(&mut cb, marker).ok()?;
-    ctrl_combo(0x43); // C
+    if remote {
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    ctrl_combo(0x43, remote); // C
     let t = Instant::now();
     let mut got = None;
-    while t.elapsed() < Duration::from_millis(600) {
+    let wait = Duration::from_millis(if remote { 1000 } else { 600 });
+    while t.elapsed() < wait {
         std::thread::sleep(Duration::from_millis(30));
         if let Ok(s) = cb.get_text() {
             if s != marker {
@@ -242,17 +325,84 @@ pub fn copy_selection() -> Option<String> {
 /// Put text on the clipboard (kept out of clipboard history) without pasting it.
 pub fn copy_private(text: &str) -> anyhow::Result<()> {
     let mut cb = arboard::Clipboard::new()?;
+    CLIPBOARD_GEN.fetch_add(1, Ordering::SeqCst);
     set_private(&mut cb, text)?;
     Ok(())
 }
 
-/// A console or terminal window (cmd, PowerShell, Windows Terminal), where Enter runs a command.
-pub fn is_console(hwnd: isize) -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
+fn window_class(hwnd: isize) -> String {
     let mut buf = [0u16; 128];
     let n = unsafe { GetClassNameW(HWND(hwnd as _), &mut buf) };
-    let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
+/// A console or terminal window (cmd, PowerShell, Windows Terminal), where Enter runs a command
+/// and Shift+Left cannot select text.
+pub fn is_console(hwnd: isize) -> bool {
+    let class = window_class(hwnd);
     matches!(class.as_str(), "ConsoleWindowClass" | "CASCADIA_HOSTING_WINDOW_CLASS" | "PseudoConsoleWindow" | "mintty")
+}
+
+/// Pure classifier for remote desktop / VM sessions, where UIA cannot read the caret, clipboard
+/// sync is asynchronous, and Shift+Left in-place replacement can double-paste.
+pub fn is_remote_desktop_match(exe: &str, title: &str, class: &str) -> bool {
+    let exe = exe.to_lowercase();
+    if matches!(
+        exe.as_str(),
+        "mstsc.exe"
+            | "msrdc.exe"
+            | "msrdcw.exe"
+            | "windowsapp.exe"
+            | "wfica32.exe"
+            | "cdviewer.exe"
+            | "vmware-view.exe"
+            | "vmware.exe"
+            | "vmplayer.exe"
+            | "vmware-vmx.exe"
+            | "virtualboxvm.exe"
+            | "parsecd.exe"
+            | "anydesk.exe"
+            | "rustdesk.exe"
+            | "teamviewer.exe"
+            | "vncviewer.exe"
+            | "tvnviewer.exe"
+            | "realvnc.exe"
+            | "remotedesktopmanager.exe"
+            | "mremoteng.exe"
+            | "royalts.exe"
+            | "moonlight.exe"
+    ) {
+        return true;
+    }
+    if matches!(
+        class,
+        "TscShellContainerClass"
+            | "TSSHELLWND"
+            | "RAIL_WINDOW"
+            | "OPContainerClass"
+            | "IHWindowClass"
+            | "CtxICADisp"
+            | "VMPlayerFrame"
+            | "VMUIFrame"
+    ) {
+        return true;
+    }
+    let t = title.to_lowercase();
+    t.contains("remote desktop") || t.contains("chrome remote desktop")
+}
+
+pub fn is_remote_desktop(exe: &str, title: &str, hwnd: isize) -> bool {
+    let class = if hwnd != 0 { window_class(hwnd) } else { String::new() };
+    is_remote_desktop_match(exe, title, &class)
+}
+
+pub fn is_remote_desktop_hwnd(hwnd: isize) -> bool {
+    if hwnd == 0 {
+        return false;
+    }
+    let class = window_class(hwnd);
+    let (exe, title) = window_info(HWND(hwnd as _));
+    is_remote_desktop_match(&exe, &title, &class)
 }
 
 pub fn foreground() -> isize {
@@ -265,10 +415,9 @@ pub fn focus(hwnd: isize) {
     }
 }
 
-/// (exe name in lowercase, window title) of the focused window.
-pub fn foreground_app() -> (String, String) {
+/// (exe name in lowercase, window title) of `hwnd`.
+fn window_info(hwnd: HWND) -> (String, String) {
     unsafe {
-        let hwnd = GetForegroundWindow();
         let mut title = [0u16; 512];
         let n = GetWindowTextW(hwnd, &mut title);
         let title = String::from_utf16_lossy(&title[..n.max(0) as usize]);
@@ -286,6 +435,11 @@ pub fn foreground_app() -> (String, String) {
         }
         (exe, title)
     }
+}
+
+/// (exe name in lowercase, window title) of the focused window.
+pub fn foreground_app() -> (String, String) {
+    window_info(unsafe { GetForegroundWindow() })
 }
 
 /// Pick a writing style from the focused app.
@@ -463,5 +617,31 @@ pub fn tcp_listener_pid(port: u16) -> Option<u32> {
         rows.iter()
             .find(|r| u16::from_be((r.dwLocalPort & 0xFFFF) as u16) == port)
             .map(|r| r.dwOwningPid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extended_keys_include_arrows_and_nav() {
+        assert!(is_extended_key(VK_LEFT));
+        assert!(is_extended_key(0x27)); // VK_RIGHT
+        assert!(is_extended_key(0x2E)); // VK_DELETE
+        assert!(is_extended_key(VK_RCONTROL));
+        assert!(!is_extended_key(0x56)); // V
+        assert!(!is_extended_key(VK_SHIFT));
+        assert!(!is_extended_key(VK_CONTROL));
+    }
+
+    #[test]
+    fn remote_desktop_detection() {
+        assert!(is_remote_desktop_match("mstsc.exe", "10.0.0.5 - Remote Desktop Connection", ""));
+        assert!(is_remote_desktop_match("MSRDC.EXE", "Work PC", ""));
+        assert!(is_remote_desktop_match("unknown.exe", "Server", "TscShellContainerClass"));
+        assert!(is_remote_desktop_match("chrome.exe", "Office PC - Chrome Remote Desktop - Google Chrome", "Chrome_WidgetWin_1"));
+        assert!(!is_remote_desktop_match("chrome.exe", "Gmail - Google Chrome", "Chrome_WidgetWin_1"));
+        assert!(!is_remote_desktop_match("code.exe", "lib.rs - Visual Studio Code", "Chrome_WidgetWin_1"));
     }
 }

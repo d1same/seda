@@ -103,6 +103,8 @@ fn small_square(width: i32, height: i32) -> bool {
 pub struct Core {
     app: AppHandle,
     settings: RwLock<Settings>,
+    /// Serialises read-modify-write updates in `update_setting` so back-to-back UI toggles never clobber each other.
+    settings_lock: Mutex<()>,
     store: Store,
     asr: RwLock<Option<asr::Asr>>,
     llm: Mutex<Option<llm::Llm>>,
@@ -692,7 +694,7 @@ impl Core {
         pairs
     }
 
-    /// 	arget: the window that was in front when you started talking; text is pasted only there.
+    /// target: the window that was in front when you started talking; text is pasted only there.
     #[allow(clippy::too_many_arguments)]
     fn process(self: &Arc<Self>, samples: Vec<f32>, secs: f64, exe: String, title: String, app_name: String, target: Option<isize>, live: Option<Arc<Mutex<LiveText>>>, context: String) {
         let s = self.settings.read().clone();
@@ -706,24 +708,22 @@ impl Core {
         }
         let quick = finish_sentence(&draft);
         let polish = s.cleanup && (s.polish == "always" || needs_polish(&draft, style));
-        // A trailing space, so the next dictation doesn't glue onto this one ("…today.Please").
-        let mut pasted = if quick.ends_with(char::is_whitespace) { quick.clone() } else { format!("{quick} ") };
-        if win::is_console(target.unwrap_or(0)) {
-            pasted = pasted.replace("\r\n", " ").replace(['\r', '\n'], " ");
-        }
-        let mut typed = false;
-        if target.is_some_and(|h| h != win::foreground()) {
-            let _ = win::copy_private(&quick);
-            self.pill("error", &app_name, "You switched windows, so Seda didn't paste. Press Ctrl+V where you want it.");
-        } else if let Err(e) = win::paste(&pasted) {
-            self.pill("error", &app_name, format!("Paste failed: {e}"));
-        } else {
-            typed = true;
-            self.pill(if polish { "polishing" } else { "done" }, &app_name, quick.clone());
-        }
-        let seq = if typed { self.paste_seq.fetch_add(1, Ordering::SeqCst) + 1 } else { 0 };
-
-        let (text, llm_ms) = if polish {
+        let target_hwnd = target.unwrap_or(0);
+        let console = win::is_console(target_hwnd);
+        let remote = win::is_remote_desktop(&exe, &title, target_hwnd);
+        // Remote desktops (RDP, Citrix, VNC, VMs) and terminals cannot safely select back with
+        // Shift+Left or verify text before the caret: wait for polish and paste ONCE instead of
+        // two-phase paste-then-replace (which caused double-pasting in RDP sessions).
+        let in_place_safe = !remote && !console;
+        let format_paste = |body: &str| {
+            // A trailing space, so the next dictation doesn't glue onto this one ("…today.Please").
+            let mut out = if body.ends_with(char::is_whitespace) { body.to_string() } else { format!("{body} ") };
+            if console {
+                out = out.replace("\r\n", " ").replace(['\r', '\n'], " ");
+            }
+            out
+        };
+        let run_cleanup = || -> (Option<String>, i64) {
             let t = Instant::now();
             let vocab = self.vocab();
             let keep: Vec<String> = self.snippet_pairs().into_iter().map(|(_, paste)| paste).filter(|p| quick.contains(p.as_str())).collect();
@@ -733,35 +733,73 @@ impl Core {
                         Ok(clean) if !clean.is_empty() => Some(self.store.apply_fixes(&clean)),
                         Ok(_) => None,
                         Err(e) => {
-                            log::log(format!("cleanup skipped, leaving the first paste: {e:#}"));
+                            log::log(format!("cleanup skipped: {e:#}"));
                             None
                         }
                     }
                 }),
                 None => {
-                    log::log("writing AI busy (meeting notes); leaving the first paste");
+                    log::log("writing AI busy (meeting notes); skipping polish");
                     None
                 }
             };
-            let llm_ms = t.elapsed().as_millis() as i64;
-            let final_text = cleaned.unwrap_or_else(|| quick.clone());
-            if typed && smart::meaningfully_different(&pasted, &final_text) && self.paste_seq.load(Ordering::SeqCst) == seq && !self.recording.load(Ordering::SeqCst) {
-                let mut replacement = if final_text.ends_with(char::is_whitespace) { final_text.clone() } else { format!("{final_text} ") };
-                if win::is_console(target.unwrap_or(0)) {
-                    replacement = replacement.replace("\r\n", " ").replace(['\r', '\n'], " ");
-                }
-                if target.is_some_and(|h| h != win::foreground()) {
-                    log::log("cleanup finished after the window changed; the first paste stays");
-                } else if let Err(e) = win::replace_tail(&pasted, &replacement) {
-                    log::log(format!("could not replace the first paste: {e:#}"));
-                }
+            (cleaned, t.elapsed().as_millis() as i64)
+        };
+        let do_paste = |body: &str, display: &str, pill_state: &'static str| -> bool {
+            if target.is_some_and(|h| h != win::foreground()) {
+                let _ = win::copy_private(display);
+                self.pill("error", &app_name, "You switched windows, so Seda didn't paste. Press Ctrl+V where you want it.");
+                false
+            } else if let Err(e) = win::paste_for(body, remote) {
+                self.pill("error", &app_name, format!("Paste failed: {e}"));
+                false
+            } else {
+                self.pill(pill_state, &app_name, display.to_string());
+                true
             }
-            if typed {
-                self.pill("done", &app_name, final_text.clone());
+        };
+
+        let (text, llm_ms) = if polish && !in_place_safe {
+            // Single-paste path for RDP / remote desktop / terminal: polish first, then paste once.
+            log::log(format!("single-paste polish (remote={remote}, console={console})"));
+            self.pill("polishing", &app_name, quick.clone());
+            let (cleaned, llm_ms) = run_cleanup();
+            let final_text = cleaned.unwrap_or_else(|| quick.clone());
+            let final_pasted = format_paste(&final_text);
+            if do_paste(&final_pasted, &final_text, "done") {
+                self.paste_seq.fetch_add(1, Ordering::SeqCst);
             }
             (final_text, llm_ms)
         } else {
-            (quick, 0)
+            let pasted = format_paste(&quick);
+            let typed = do_paste(&pasted, &quick, if polish { "polishing" } else { "done" });
+            let seq = if typed { self.paste_seq.fetch_add(1, Ordering::SeqCst) + 1 } else { 0 };
+            let input_seq = hotkey::user_input_seq();
+
+            if polish {
+                let (cleaned, llm_ms) = run_cleanup();
+                let final_text = cleaned.unwrap_or_else(|| quick.clone());
+                if typed
+                    && smart::meaningfully_different(&pasted, &final_text)
+                    && self.paste_seq.load(Ordering::SeqCst) == seq
+                    && !self.recording.load(Ordering::SeqCst)
+                {
+                    let replacement = format_paste(&final_text);
+                    if target.is_some_and(|h| h != win::foreground()) {
+                        log::log("cleanup finished after the window changed; the first paste stays");
+                    } else if hotkey::user_input_seq() != input_seq {
+                        log::log("user typed or clicked while polishing; leaving the first paste");
+                    } else if let Err(e) = win::replace_tail(&pasted, &replacement) {
+                        log::log(format!("could not replace the first paste: {e:#}"));
+                    }
+                }
+                if typed {
+                    self.pill("done", &app_name, final_text.clone());
+                }
+                (final_text, llm_ms)
+            } else {
+                (quick, 0)
+            }
         };
         log::log(format!("dictation {secs:.1}s audio, speech {asr_ms} ms, cleanup {llm_ms} ms, style '{style}'"));
 
@@ -897,6 +935,7 @@ fn get_settings(core: CoreState) -> Settings {
 /// setup filled in meanwhile (that bug made both models "not downloaded" right after setup).
 #[tauri::command]
 fn update_setting(core: CoreState, key: String, value: serde_json::Value) -> Result<Settings, String> {
+    let _guard = core.settings_lock.lock();
     let mut json = serde_json::to_value(core.settings.read().clone()).map_err(|e| e.to_string())?;
     let obj = json.as_object_mut().ok_or("settings are not an object")?;
     if !obj.contains_key(&key) {
@@ -1411,7 +1450,10 @@ impl Core {
         }
         let _ = w.set_size(tauri::LogicalSize::new(340.0, 84.0));
         win::round_corners(h.0 as isize, true);
-        if let (Some(m), Ok(size)) = (self.app.primary_monitor().ok().flatten(), w.outer_size()) {
+        let monitor = win::foreground_center()
+            .and_then(|(x, y)| self.app.monitor_from_point(x as f64, y as f64).ok().flatten())
+            .or_else(|| self.app.primary_monitor().ok().flatten());
+        if let (Some(m), Ok(size)) = (monitor, w.outer_size()) {
             let area = m.work_area();
             let margin = (16.0 * m.scale_factor()) as i32;
             let x = area.position.x + area.size.width as i32 - size.width as i32 - margin;
@@ -1645,7 +1687,7 @@ fn write_meeting_notes(core: &Core, id: i64, live: Option<meeting::LiveNotes>) -
     let others: Vec<String> = m.people.split(" | ").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     // A recovered or rewritten meeting keeps the template chosen for it (a removed one reads as Auto).
     let template = templates::resolve(&core.settings.read().templates, &m.template);
-    let notes = meeting::write_notes(core, &segs, live, &m.my_notes, &others, &template);
+    let notes = meeting::write_notes(core, &segs, live, &m.my_notes, &m.cal, &others, &template);
     let written = notes.is_ok();
     let (title, notes) = match notes {
         Ok((n, parts, until)) => {
@@ -2469,6 +2511,7 @@ fn tauri_main() {
             let core = Arc::new(Core {
                 app: app.handle().clone(),
                 settings: RwLock::new(settings.clone()),
+                settings_lock: Mutex::new(()),
                 store,
                 asr: RwLock::new(None),
                 llm: Mutex::new(None),
@@ -2564,7 +2607,7 @@ fn tauri_main() {
                                 let segs: Vec<meeting::Segment> = std::fs::read_to_string(&path).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
                                 let live = meeting::simulate_live(&c, &segs);
                                 let t = Instant::now();
-                                let text = match meeting::write_notes(&c, &segs, Some(live), "", &[], &templates::resolve(&[], "auto")) { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
+                                let text = match meeting::write_notes(&c, &segs, Some(live), "", "", &[], &templates::resolve(&[], "auto")) { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
                                 let _ = std::fs::write(format!("{path}.live.md"), &text);
                                 log::log(format!("test livenotes: end-of-meeting wait {:.1}s", t.elapsed().as_secs_f32()));
                             }
@@ -2573,7 +2616,7 @@ fn tauri_main() {
                                 let path = s[6..].to_string();
                                 let segs: Vec<meeting::Segment> = std::fs::read_to_string(&path).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
                                 let t = Instant::now();
-                                let text = match meeting::write_notes(&c, &segs, None, "", &[], &templates::resolve(&[], "auto")) { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
+                                let text = match meeting::write_notes(&c, &segs, None, "", "", &[], &templates::resolve(&[], "auto")) { Ok((n, _, _)) => n, Err(e) => format!("ERROR {e}") };
                                 let _ = std::fs::write(format!("{path}.notes.md"), &text);
                                 log::log(format!("test notes: {} lines in {:.1}s", segs.len(), t.elapsed().as_secs_f32()));
                             }

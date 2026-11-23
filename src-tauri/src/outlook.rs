@@ -28,6 +28,7 @@ foreach ($item in $items) {
     if ($item.End -lt $from) { continue }
     if ($item.Start -le $now -and $item.End -ge $now -and -not $item.AllDayEvent) {
       $names = @()
+      if ($item.Organizer) { $names += [string]$item.Organizer }
       foreach ($r in @($item.Recipients)) { if ($r.Name) { $names += [string]$r.Name } }
       [pscustomobject]@{ subject = [string]$item.Subject; people = $names } | ConvertTo-Json -Compress
       exit 0
@@ -48,7 +49,7 @@ pub fn current(user_name: &str, email: &str) -> Option<Appointment> {
         .ok()?;
     let started = Instant::now();
     loop {
-        if started.elapsed() > Duration::from_secs(4) {
+        if started.elapsed() > Duration::from_secs(12) {
             let _ = child.kill();
             return None;
         }

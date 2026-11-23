@@ -66,6 +66,17 @@ pub fn builtins() -> Vec<Template> {
     vec![
         tpl("auto", "Auto", "", &[]),
         tpl(
+            "phone_call",
+            "Phone call",
+            "A phone call or quick voice call. Capture concrete facts, numbers, dates, agreements, and follow-ups cleanly.",
+            &[
+                ("Context", "who was on the call, why they spoke, and any account, order, or reference details"),
+                ("Key points", "main facts, updates, numbers, dates, and details discussed, grouped with sub-bullets"),
+                ("Outcomes & agreements", "what was resolved, confirmed, or decided on the call"),
+                ("Next steps", ""),
+            ],
+        ),
+        tpl(
             "ticket",
             "Troubleshooting ticket",
             "A support or troubleshooting call. The notes are pasted into a ticket.",
@@ -419,17 +430,19 @@ mod tests {
     fn builtins_and_resolve() {
         let custom = vec![t("c_standup", "Stand-up", &[("Done", ""), ("Doing", "")])];
         let all = all(&custom);
-        assert_eq!(all.iter().map(|i| i.t.id.as_str()).collect::<Vec<_>>(), ["auto", "ticket", "one_on_one", "customer", "interview", "c_standup"]);
-        assert!(all[0].builtin && !all[5].builtin);
-        let json = serde_json::to_value(&all[5]).unwrap();
+        assert_eq!(all.iter().map(|i| i.t.id.as_str()).collect::<Vec<_>>(), ["auto", "phone_call", "ticket", "one_on_one", "customer", "interview", "c_standup"]);
+        assert!(all[0].builtin && all[1].builtin && !all[6].builtin);
+        let json = serde_json::to_value(&all[6]).unwrap();
         assert_eq!(json["builtin"], false);
         assert_eq!(json["sections"][0]["heading"], "Done");
         assert_eq!(resolve(&custom, "").id, "auto");
         assert_eq!(resolve(&custom, "c_gone").id, "auto");
         assert_eq!(resolve(&custom, "c_standup").name, "Stand-up");
+        assert_eq!(resolve(&[], "phone_call").sections.len(), 4);
         assert_eq!(resolve(&[], "one_on_one").sections.len(), 5);
         assert!(matches!(shape(&resolve(&[], "auto")), Shape::Auto));
         assert!(matches!(shape(&resolve(&[], "ticket")), Shape::Ticket));
+        assert!(matches!(shape(&resolve(&[], "phone_call")), Shape::Sections(_)));
         assert!(matches!(shape(&resolve(&[], "interview")), Shape::Sections(_)));
         // No built-in invents a verdict.
         assert!(!builtins().iter().flat_map(|t| t.sections.iter()).any(|s| s.heading.to_lowercase().contains("verdict")));

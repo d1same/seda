@@ -9,7 +9,8 @@ use crate::settings::Binding;
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -32,13 +33,21 @@ struct Config {
     fix: Binding,
     dictate_held: bool,
     recording: bool,
+    last_hook: Option<Instant>,
     tx: Sender<HotkeyEvent>,
 }
 
 static CFG: OnceLock<Mutex<Config>> = OnceLock::new();
 static PAUSED: AtomicBool = AtomicBool::new(false);
 /// How many times Windows has called our hooks (diagnostics: proves the hook is alive).
-pub static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static CALLS: AtomicU64 = AtomicU64::new(0);
+/// Monotonic counter of real (non-Seda) user key presses and mouse clicks. Used to avoid
+/// replacing a pasted draft if the user typed, hit Enter, or clicked while the AI was polishing.
+static USER_INPUT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+pub fn user_input_seq() -> u64 {
+    USER_INPUT_SEQ.load(Ordering::SeqCst)
+}
 /// Seda's own synthetic keystrokes (its Ctrl+V / Ctrl+C) carry this tag so the hook can ignore them.
 /// All other synthetic input IS accepted: mouse software (Logitech G Hub, Razer Synapse, AutoHotkey)
 /// delivers remapped buttons as synthetic input, and ignoring it broke shortcuts for those users.
@@ -55,7 +64,7 @@ const WM_XBUTTONUP: u32 = 0x020C;
 const VK_ESCAPE: u32 = 0x1B;
 
 pub fn start(dictate: Binding, fix: Binding, tx: Sender<HotkeyEvent>) {
-    let _ = CFG.set(Mutex::new(Config { dictate, fix, dictate_held: false, recording: false, tx }));
+    let _ = CFG.set(Mutex::new(Config { dictate, fix, dictate_held: false, recording: false, last_hook: None, tx }));
     std::thread::spawn(|| unsafe {
         let install = || -> (Option<HHOOK>, Option<HHOOK>) {
             let m = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0).ok();
@@ -80,6 +89,12 @@ pub fn start(dictate: Binding, fix: Binding, tx: Sender<HotkeyEvent>) {
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             if msg.message == WM_TIMER {
+                // Skip unhooking while a dictation shortcut is held or recording is active,
+                // otherwise the key-up event could be missed during the brief reinstall gap.
+                let busy = CFG.get().and_then(|cfg| cfg.try_lock()).is_some_and(|c| c.dictate_held || c.recording);
+                if busy {
+                    continue;
+                }
                 // Re-install: cheap, and recovers from Windows silently removing the hook.
                 for h in [m, k].into_iter().flatten() {
                     let _ = UnhookWindowsHookEx(h);
@@ -122,6 +137,13 @@ pub fn local(event: &str) {
     if PAUSED.load(Ordering::Relaxed) {
         return;
     }
+    // WebView2 runs in a child process, so the OS low-level hook often fires just before this async
+    // IPC arrives. Ignore local down/up echoes within 500 ms of a real hook event on the shortcut.
+    if matches!(event, "down" | "up")
+        && c.last_hook.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(500))
+    {
+        return;
+    }
     match event {
         "down" if !c.dictate_held => {
             c.dictate_held = true;
@@ -158,18 +180,21 @@ fn key_matches(b: &Binding, vk: u32) -> bool {
 }
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if wparam.0 as u32 != 0x0200 {
+    let msg = wparam.0 as u32;
+    if msg != 0x0200 {
         CALLS.fetch_add(1, Ordering::Relaxed); // count clicks, not plain mouse moves
     }
     if code >= 0 && !PAUSED.load(Ordering::Relaxed) {
         let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
-        let msg = wparam.0 as u32;
+        let injected = info.dwExtraInfo == SEDA_MARK;
+        if !injected && matches!(msg, 0x0201 | 0x0204 | WM_MBUTTONDOWN | WM_XBUTTONDOWN) {
+            USER_INPUT_SEQ.fetch_add(1, Ordering::SeqCst);
+        }
         let button = match msg {
             WM_XBUTTONDOWN | WM_XBUTTONUP => (info.mouseData >> 16) & 0xFFFF, // 1 = X1, 2 = X2
             WM_MBUTTONDOWN | WM_MBUTTONUP => 3,
             _ => 0,
         };
-        let injected = info.dwExtraInfo == SEDA_MARK;
         if button != 0 && !injected {
             // try_lock: never make the whole system's mouse wait on us.
             if let Some(mut c) = CFG.get().and_then(|m| m.try_lock()) {
@@ -178,6 +203,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 }
                 if c.dictate.kind == "mouse" && c.dictate.code == button {
                     let is_down = msg == WM_XBUTTONDOWN || msg == WM_MBUTTONDOWN;
+                    c.last_hook = Some(Instant::now());
                     if is_down && !c.dictate_held {
                         c.dictate_held = true;
                         let _ = c.tx.send(HotkeyEvent::DictateDown);
@@ -202,6 +228,9 @@ unsafe extern "system" fn key_proc(code: i32, wparam: WPARAM, lparam: LPARAM) ->
         let msg = wparam.0 as u32;
         let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
         let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+        if !injected && is_down {
+            USER_INPUT_SEQ.fetch_add(1, Ordering::SeqCst);
+        }
         if !injected && (is_down || is_up) {
             if let Some(mut c) = CFG.get().and_then(|m| m.try_lock()) {
                 // Log only shortcut-like presses (a modifier held), never ordinary typing.
@@ -214,6 +243,7 @@ unsafe extern "system" fn key_proc(code: i32, wparam: WPARAM, lparam: LPARAM) ->
                     )));
                 }
                 if c.dictate.kind == "key" && c.dictate.code == vk && (c.dictate_held || key_matches(&c.dictate, vk)) {
+                    c.last_hook = Some(Instant::now());
                     if is_down && !c.dictate_held {
                         c.dictate_held = true;
                         let _ = c.tx.send(HotkeyEvent::DictateDown);

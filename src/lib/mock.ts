@@ -78,6 +78,8 @@ let askLog: ChatTurn[] = [];
 
 const BUILTINS: Template[] = [
   { id: "auto", name: "Auto", about: "", sections: [], builtin: true },
+  { id: "phone_call", name: "Phone call", about: "A phone call or quick voice call. Capture concrete facts, numbers, dates, agreements, and follow-ups cleanly.", builtin: true,
+    sections: [{ heading: "Context", hint: "who was on the call, why they spoke, and any account, order, or reference details" }, { heading: "Key points", hint: "main facts, updates, numbers, dates, and details discussed, grouped with sub-bullets" }, { heading: "Outcomes & agreements", hint: "what was resolved, confirmed, or decided on the call" }, { heading: "Next steps", hint: "" }] },
   { id: "ticket", name: "Troubleshooting ticket", about: "A support or troubleshooting call. The notes are pasted into a ticket.", builtin: true,
     sections: [{ heading: "Problem", hint: "what is wrong" }, { heading: "What we tried", hint: "each real step, in order" }, { heading: "Solution", hint: "what fixed it, or what is still broken" }, { heading: "Next steps", hint: "" }] },
   { id: "one_on_one", name: "1:1", about: "A one-to-one between the user and one other person.", builtin: true,
@@ -176,7 +178,8 @@ export function mockInvoke(cmd: string, args: any): any {
     case "update_status": case "update_check": return { version: "0.1.4", notes: "Fixes and improvements." };
     case "update_install": return;
     case "call_start": case "call_dismiss": case "call_hide": case "call_open": return;
-    case "meeting_set_my_notes": case "meeting_save_notes": case "meeting_clear_chat": return;
+    case "meeting_save_notes": { const m = meetings.find((x) => x.id === args.id); if (m) { m.title = args.title; m.notes = args.notes; } return; }
+    case "meeting_set_my_notes": case "meeting_clear_chat": return;
     case "meeting_update_my_notes": { const m = meetings.find((x) => x.id === args.id); if (m) m.my_notes = args.text; return; }
     case "meetings_list": return meetings.map((m) => ({ ...m, transcript: "", notes: "" }));
     case "meeting_get": { const m = meetings.find((x) => x.id === args.id); return m ? { ...m } : null; }

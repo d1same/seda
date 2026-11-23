@@ -97,10 +97,15 @@
 .notes .bullet.sub { font-size: 14.5px; }
 .notes .bullet.sub::before { width: 5px; height: 5px; box-sizing: border-box; background: transparent; border: 1px solid var(--ink-3); }
 .notes .task { padding-inline-start: 22px; }
+.notes .task.done .task-text { color: var(--ink-3); text-decoration: line-through; }
 .notes .task .box {
+  all: unset; cursor: pointer;
   position: absolute; inset-inline-start: 0; top: .42em; width: 13px; height: 13px; box-sizing: border-box;
   border: 1.5px solid var(--ink-2); border-radius: var(--r-1);
+  transition: border-color var(--t-fast), background var(--t-fast);
 }
+.notes .task .box:hover { border-color: var(--ink); }
+.notes .task .box:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .notes .task .box.on { background: var(--ink); border-color: var(--ink); }
 .notes .task .box.on::after {
   content: ""; position: absolute; left: 3px; top: 0; width: 3px; height: 6px;

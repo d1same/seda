@@ -21,7 +21,7 @@ const IDLE: MeetingStatus = { running: false, secs: 0, segments: [], my_notes: "
 const peopleLabel = (people?: string) => (people || "").split(" | ").map((s) => s.trim()).filter(Boolean).join(", ");
 const meetingName = (m: { title: string; cal?: string }) => m.title.trim() || m.cal?.trim() || "Writing notes…";
 const speaker = (who: string, me: string) => (who === "You" ? me || "You" : who);
-const SUGGESTIONS = ["What did I agree to do?", "Write a follow-up email", "Make it shorter", "Translate to English"];
+const SUGGESTIONS = ["What did I agree to do?", "Write a follow-up email", "Add more detail", "Make it shorter"];
 const SUGGESTIONS_ALL = ["What did I agree to do this week?", "What was decided this week?", "What is still open?"];
 type Go = (s: SectionId) => void;
 
@@ -43,8 +43,9 @@ export function fromMine(line: string, mine: string[][]): boolean {
 }
 
 /** Just enough Markdown for the notes the AI writes: ## headings, bullets, [ ] tasks, **bold**.
- *  With `mine` (the user's own notes), their lines are marked so they read darker than the AI's. */
-function Notes({ md, mine = "" }: { md: string; mine?: string }) {
+ *  With `mine` (the user's own notes), their lines are marked so they read darker than the AI's.
+ *  When `onToggleTask` is given, clicking a task checkbox toggles `[ ]` ↔ `[x]` in place. */
+function Notes({ md, mine = "", onToggleTask }: { md: string; mine?: string; onToggleTask?: (lineIdx: number) => void }) {
   const inline = (t: string) => t.split(/(\*\*[^*]+\*\*)/).map((p, i) => (p.startsWith("**") ? <b key={i}>{p.slice(2, -2)}</b> : p));
   const own = ownLines(mine);
   const who = (l: string) => (own.length ? (fromMine(l, own) ? " mine" : " ai") : "");
@@ -58,7 +59,22 @@ function Notes({ md, mine = "" }: { md: string; mine?: string }) {
         const style = depth ? { marginInlineStart: depth * 20 } : undefined;
         if (l.startsWith("#")) return <h3 key={i} className={who(l).trim()} dir="auto">{l.replace(/^#+\s*/, "")}</h3>;
         const task = l.match(/^[-*]\s*\[( |x)\]\s*(.*)$/i);
-        if (task) return <div key={i} className={`task${who(l)}`} style={style} dir="auto"><span className={`box ${task[1] !== " " ? "on" : ""}`} />{inline(task[2])}</div>;
+        if (task) {
+          const checked = task[1] !== " ";
+          return (
+            <div key={i} className={`task${checked ? " done" : ""}${who(l)}`} style={style} dir="auto">
+              <button
+                type="button"
+                className={`box ${checked ? "on" : ""}`}
+                role="checkbox"
+                aria-checked={checked}
+                aria-label={checked ? "Mark incomplete" : "Mark complete"}
+                onClick={() => onToggleTask?.(i)}
+              />
+              <span className="task-text">{inline(task[2])}</span>
+            </div>
+          );
+        }
         if (/^[-*]\s/.test(l)) return <div key={i} className={`bullet ${depth ? "sub" : ""}${who(l)}`} style={style} dir="auto">{inline(l.slice(2))}</div>;
         return <p key={i} className={who(l).trim()} style={style} dir="auto">{inline(l)}</p>;
       })}
@@ -196,6 +212,17 @@ function MeetingDoc({ id, back, me, go }: { id: number; back: () => void; me: st
   };
   const exportMd = async () => { try { await api.meetingExport(id); } catch (e) { alert(String(e)); } };
   const save = async () => { await api.meetingSaveNotes(id, title.trim() || m.title, draft); setEditing(false); load(); };
+  const toggleTask = (lineIdx: number) => {
+    const lines = m.notes.split("\n");
+    const line = lines[lineIdx];
+    if (line === undefined) return;
+    const next = line.replace(/^(\s*[-*]\s*\[)( |x)(\]\s*)/i, (_, a, box, b) => `${a}${box === " " ? "x" : " "}${b}`);
+    if (next === line) return;
+    lines[lineIdx] = next;
+    const updated = lines.join("\n");
+    setM({ ...m, notes: updated });
+    api.meetingSaveNotes(id, m.title, updated);
+  };
   const edit = () => { setTab("notes"); setDraft(m.notes); setEditing(true); };
   const commitTitle = () => {
     const t = title.trim();
@@ -292,7 +319,7 @@ function MeetingDoc({ id, back, me, go }: { id: number; back: () => void; me: st
         {tab === "notes" && (editing
           ? <textarea className="notes-edit" dir="auto" aria-label="Notes" value={draft} onChange={(e) => setDraft(e.target.value)} />
           : writing ? <div className="writing"><span className="sweep-bar" />{rewriting ? <>Rewriting the notes as <span dir="auto">{rewriting}</span>…</> : "Reading the transcript — about a minute per half hour."}</div>
-          : <Notes md={m.notes} mine={m.my_notes} />)}
+          : <Notes md={m.notes} mine={m.my_notes} onToggleTask={toggleTask} />)}
         {tab === "mine" && <MyNotes id={id} initial={m.my_notes} flushRef={flushMine} onSaved={(v) => setM((p) => p && { ...p, my_notes: v })} />}
         {tab === "transcript" && <Transcript segs={segs} me={me} />}
       </div>

@@ -95,145 +95,183 @@ pub fn rewrite_prompt(mode: &str) -> &'static str {
     }
 }
 
-/// Shared rules for all meeting notes (single pass, parts and merge).
-/// Troubleshooting calls become a ticket: problem, steps, solution. Other calls stay topic notes.
+/// Shared rules for Auto meeting and phone-call notes (Granola style).
 const NOTE_RULES: &str = "Rules:
-- Read the whole transcript, especially the end. The result of the call is usually in the last minute. Do not stop at the opening problem.
-- Write the fact, not the conversation. \"Restarting the phone fixed the dial tone.\" Never \"the user said\", \"the user noted\", \"they attempted\" or \"they confirmed\".
-- If something is broken and people try to fix it, this is a troubleshooting ticket. Use these sections, in this order:
-  ## Problem
-  - what is wrong
-  ## What we tried
-  - each real step, in the order it happened, one line
-  ## Solution
-  - what fixed it, in one or two plain sentences a ticket can paste. If it is still broken, write \"Still broken:\" and what is left.
-- A step done on the call that fixed the issue is the Solution. Never list that finished fix as a next step.
-- Say the fix in plain ticket words. Unplugging a phone and plugging it back in is restarting the phone. Write that when that is what happened.
-- Skip greetings, hold music, and repeated mishears. Keep every step that was actually tried, and keep the result.
-- If it is not troubleshooting, organise by topic: one ## section per subject, named after the outcome, in the order it came up. Never use generic headings like \"Summary\", \"Discussion\" or \"Session\".
-- Be specific: names, numbers, versions, decisions. Never \"participants discussed issues\".
-- A detail that only supports one fact is an indented sub-bullet (two spaces, then \"- \").
-- Next steps are work still NOT done when the call ends: a bold imperative with the owner in parentheses, **Check the router** (Moe). Every open commitment counts (\"I'll send the photo\", \"Sam, can you …\"). Never list something already finished, and never list chatter (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
-- Leave out an open question that is already a next step.
-- Never invent anything that was not said.
-- \"You\" in the transcript is the user; \"Them\" is the other people. Speech recognition mishears words: write the meaning, or leave the word out. Never keep the bad word with a guess in parentheses.
-- Each point stays in the language it was spoken. Do not translate the meeting into one language. English stays English even when Persian is also spoken. English written in Persian letters (یس، فرسی) is English: write it in English letters.
-Shape to copy when the call fixes something:
-# Office phones are back online
-## Problem
-- The office phones blink a red light and say Network Disconnect, then SIP Register Failed
-## What we tried
-- The Netgear switch in the server room powers the phones. Each phone has one gray cable
-- Jimmy unplugged that gray cable and plugged it back in
-## Solution
-- Restarting the phone fixed it. The dial tone came back, and a call to the other office went through
-Shape to copy when nothing was fixed yet:
-# MegaWiFi has no internet
-## Office link to Astoria
-- MegaWiFi connects, but Google does not open
-- The office router is not linked to the main router in Astoria
-## Next steps
-- **Check the office router and call back in 4–5 minutes** (Moe)";
+- Read the ENTIRE transcript from start to finish, especially the final minutes. Outcomes, final numbers, and agreements often happen at the very end—never stop at the opening context.
+- Capture real substance like an executive note-taker: keep every concrete fact, number, dollar amount, date, deadline, reference/order/account number, name, trade-off, concern, and reason (\"why\"). Never compress a substantive topic into vague filler like \"discussed pricing\" or \"talked about the timeline\".
+- Write the fact directly, not meta-commentary about the conversation. Write \"Launch moves to Nov 21 while Stripe finishes compliance review\" — never \"the user said\", \"they discussed\", \"participants noted\", or \"they confirmed\".
+- Organise cleanly by topic: one descriptive ## section per major subject (in logical or chronological order). Never use generic headings like \"Summary\", \"Discussion\", \"Overview\", or \"Session\".
+- Use crisp hierarchy: each main point is a \"- \" bullet, and supporting details, numbers, context, or rationale go underneath as 2-space indented sub-bullets (\"  - \").
+- Skip small talk, greetings, hold music, filler, and repeated speech-recognition mishears.
+- If the call is strictly an IT/technical troubleshooting session where something broke and people stepped through fixes, use ## Problem, ## What we tried, and ## Solution (with what fixed it, or \"Still broken:\" and what remains). For all other phone calls and meetings, use natural topic headings.
+- ## Decisions: concrete agreements, approvals, or choices settled on the call (only if any were made).
+- ## Next steps: ONLY work still NOT done when the call ends. Format every item as a checkbox with a bold imperative verb and the owner (and deadline if mentioned) in parentheses:
+  - [ ] **Send the revised quote** (Sam — by Wednesday)
+  Include every open commitment (\"I'll email you\", \"Can you check with…\", \"Let's follow up Thursday\"). Never list something already completed on the call, and never list call chatter (\"hold on\", \"share your screen\", \"can you hear me\", \"let me check\").
+- ## Open questions: genuinely unanswered questions left at the end of the call (omit anything answered later in the call or already listed under Next steps).
+- Never invent facts, names, dates, or numbers that were not said.
+- \"You\" in the transcript is the user; \"Them\" is the other speaker(s). Speech recognition occasionally mishears words: write the clearly intended meaning, or leave an unintelligible word out—never keep a garbled word with a guess in parentheses.
+- Preserve spoken languages: each bullet stays in the language it was spoken. Never translate English into Persian or Persian into English. English words that arrived in Persian letters (یس، فرسی، دیپلوی) are English—write them in English letters.
 
-const MEETING: &str = "You are an excellent note-taker. Turn this meeting transcript (lines start with [mm:ss] and the speaker) into clear notes someone can paste into a ticket. Output Markdown only:
-# <a specific title naming the outcome, 4-9 words>
-For a troubleshooting call, use ## Problem, then ## What we tried, then ## Solution. Those do not count toward the topic limit.
-Otherwise one ## section per topic, up to {N} topics.
+Example of the target depth, structure, and tone:
+# Q4 Renewal & Staging Rollout with Acme
+## Renewal Pricing & Contract Terms
+- Acme plans to renew for 12 months at 45 seats (up from 30), starting December 1
+  - Annual total increases from $18,000 to $25,500 with a 15% volume discount
+  - Procurement requested net-45 payment terms instead of net-30
+- Security questionnaire must be completed before Acme can issue a PO
+## Staging Rollout & Timeline
+- Launch moves from November 14 to November 21
+  - Payment provider compliance review requires five more business days
+  - Staging database still hits intermittent timeouts under peak load
+- Existing EU customers will have zero downtime during the rollout
+## Decisions
+- Approved the 15% volume discount on the 45-seat annual renewal
+- Confirmed November 21 as the new launch date
+## Next steps
+- [ ] **Send the revised $25,500 renewal quote with net-45 terms** (Sam — by Wednesday)
+- [ ] **Complete and return Acme's security questionnaire** (Alex — by Friday)
+- [ ] **Investigate staging database timeouts with the infra team** (Alex)
+## Open questions
+- Whether Acme's EU subsidiary will bill under the same contract or separately";
+
+const MEETING: &str = "You are an expert note-taker for phone calls and meetings (in the style of Granola). Turn this transcript (lines start with [mm:ss] and the speaker) into thorough, crisp, scannable Markdown notes that someone can rely on weeks later without re-reading the transcript. Output Markdown only:
+# <specific, informative title capturing the call's subject or outcome, 4-9 words>
+One ## section per major topic (up to {N} topic sections), each with concrete \"- \" bullets and indented \"  - \" sub-bullets for numbers, dates, context, and reasons.
 ## Decisions
 - <decision>   (only if decisions were made)
 ## Next steps
-- **<imperative task>** (<who>)   (only work still not done)
+- [ ] **<imperative task>** (<owner, plus due date if mentioned>)   (only open work still not done)
 ## Open questions
-- <question left unanswered>   (only if any)
-The solution is whatever fixed the issue on this call, including a call that was resumed and continued. Missing the fix is worse than a long note. List every real step, decision, and leftover task.
+- <unanswered question>   (only if any remain unanswered at the end)
+Leave out empty sections. Never miss the final outcome, key numbers, decisions, or commitments.
 {RULES}";
 
-const MEETING_PART: &str = "You take detailed notes on one part (about 10 minutes) of a longer meeting (lines start with [mm:ss] and the speaker). Later parts continue the same call, including after a resume. Output Markdown only, in THIS order:
-## Problem
-- <what is wrong, if this part has it>
-## What we tried
-- <each step tried in this part>
-## Solution
-- <what fixed it in this part, or what is still broken>
+const MEETING_PART: &str = "You take thorough, structured notes on one ~10-minute segment of a longer call or meeting (lines start with [mm:ss] and the speaker). Later parts continue the same call. Output Markdown only:
+## <specific topic>
+- <concrete fact, number, date, or update>
+  - <supporting detail, context, or reason>
 ## Decisions
-- <decision>
+- <decision made in this part>
 ## Next steps
-- **<imperative task>** (<who>)
+- [ ] **<imperative task>** (<owner, plus due date if mentioned>)
 ## Open questions
-- <question>
-## <topic>
-- <specific point>
-Leave out empty sections. A fix done in this part goes under Solution, not Next steps. Capture every step and every leftover task.
+- <question raised in this part>
+If this part is technical troubleshooting, you may also use ## Problem, ## What we tried, and ## Solution. Leave out empty sections. Capture every concrete detail, number, name, decision, step tried, and commitment so nothing is lost when parts are combined.
 {RULES}";
-const MEETING_MERGE: &str = "You get the notes of consecutive parts of one meeting, in order, including a call that was resumed. Combine them into one ticket. Output Markdown only:
-# <a specific title naming the outcome, 4-9 words>
-## <topic>
-- <specific point>
-  - <supporting detail>
-Merge sections about the same subject into ONE section. Keep every troubleshooting step and the result. At most {N} topic sections besides Problem, What we tried, and Solution. Write ONLY the title and topic sections: do NOT write Problem, What we tried, Solution, Decisions, Next steps, or Open questions (they are added separately).
+
+const MEETING_MERGE: &str = "You receive the structured notes of consecutive parts of one call or meeting, in chronological order. Synthesise them into ONE cohesive, executive-grade set of notes (in the style of Granola). Output Markdown only:
+# <specific, informative title capturing the full call's subject or final outcome, 4-9 words>
+One ## section per major topic (up to {N} topic sections), merging points about the same subject across parts into a single clean section with \"- \" bullets and \"  - \" sub-bullets.
+## Decisions
+- <final decision>   (only if decisions were made; merge duplicates and reflect the final choice if it changed later)
+## Next steps
+- [ ] **<imperative task>** (<owner, plus due date if mentioned>)   (only work STILL open at the end of the call—drop tasks that were finished in a later part and merge duplicates)
+## Open questions
+- <question STILL unanswered at the end of the call—drop questions that were answered in a later part>
+Keep every concrete fact, number, date, name, decision, and unresolved commitment from the parts. Leave out empty sections.
 {RULES}";
+
 /// Appended to Auto's instructions when the user chose the troubleshooting ticket template.
-const FORCE_TICKET: &str = "\n\nThe user chose the troubleshooting ticket template for this meeting. Treat it as a troubleshooting call even if the problem was small: write ## Problem, ## What we tried and ## Solution, in that order, before anything else.";
+const FORCE_TICKET: &str = "\n\nThe user chose the Troubleshooting ticket template for this call. Treat it as a support/troubleshooting ticket regardless of how small the issue was. Output these sections first, in this exact order:
+## Problem
+- what is wrong (exact symptoms, error messages, affected devices/users)
+## What we tried
+- each real diagnostic or fix step, in order
+## Solution
+- what fixed it in plain ticket language (or \"Still broken:\" and what remains)
+Then add ## Next steps (only if follow-up work remains).
+Example:
+# Office phones are back online
+## Problem
+- Office phones blinked a red light and showed Network Disconnect, then SIP Register Failed
+## What we tried
+- Verified the Netgear PoE switch in the server room powers each phone over one gray Ethernet cable
+- Jimmy unplugged and reconnected the gray cable on the affected phone
+## Solution
+- Restarting the phone via PoE cable reconnect restored the dial tone; a test call to the other office went through";
 
 /// Single pass with a template: the template's sections are the skeleton.
-const MEETING_T: &str = "You are an excellent note-taker. Turn this meeting transcript (lines start with [mm:ss] and the speaker) into clear notes. This meeting is: {ABOUT}
+const MEETING_T: &str = "You are an expert note-taker for phone calls and meetings (in the style of Granola). Turn this transcript (lines start with [mm:ss] and the speaker) into thorough, crisp, scannable notes. This meeting is: {ABOUT}
 Output Markdown only, with exactly these sections, in this order:
-# <a specific title naming the outcome, 4-9 words>
+# <specific, informative title capturing the call's subject or outcome, 4-9 words>
 {SECTIONS}
 Write each \"## \" heading exactly as given above, without the text after \"—\". That text only tells you what belongs in the section; never copy it into the notes.
-Under each heading write \"- \" bullets with what the meeting said about it. Put every important point under the section where it fits best. Leave out a section when the meeting has nothing for it: no empty headings, and never \"None\".
+Under each heading write concrete \"- \" bullets (and indented \"  - \" sub-bullets for supporting numbers, dates, context, and reasons). Put every important point under the section where it fits best. Leave out a section when the meeting has nothing for it: no empty headings, and never \"None\".
 {RULES}";
 
 /// Long meeting with a template: the model writes only the sections the code does not place.
-const MEETING_MERGE_T: &str = "You get the notes of consecutive parts of one meeting, in order, including a call that was resumed. This meeting is: {ABOUT}
-Combine them into one set of notes. Output Markdown only, with exactly these sections, in this order:
-# <a specific title naming the outcome, 4-9 words>
+const MEETING_MERGE_T: &str = "You receive the notes of consecutive parts of one call or meeting, in order, including a call that was resumed. This meeting is: {ABOUT}
+Combine them into one cohesive, detailed set of notes. Output Markdown only, with exactly these sections, in this order:
+# <specific, informative title capturing the full call's subject or outcome, 4-9 words>
 {SECTIONS}
 Write each \"## \" heading exactly as given above, without the text after \"—\". That text only tells you what belongs in the section; never copy it into the notes.
-Under each heading write \"- \" bullets. Merge points about the same subject into one bullet with sub-bullets. Keep every specific fact, step and result from the parts. Leave out a section when the parts have nothing for it.
+Under each heading write \"- \" bullets and \"  - \" sub-bullets. Merge points about the same subject cleanly. Keep every concrete fact, number, date, step, and result from the parts. Leave out a section when the parts have nothing for it.
 Do NOT write these sections: {SKIP}. They are added separately.
 {RULES}";
 
-/// Long meeting with a template whose parts don't fit one request: groups of parts first.
-const MEETING_CONDENSE: &str = "You get the notes of consecutive parts of one meeting, in order. Combine them into one shorter set of notes that keeps every specific fact. Output Markdown only:
+/// Long meeting whose parts don't fit one request: groups of parts condensed first.
+const MEETING_CONDENSE: &str = "You receive the notes of consecutive parts of one call or meeting, in chronological order. Combine them into one tighter set of notes that keeps EVERY concrete fact, number, date, name, decision, step tried, and open commitment. Output Markdown only:
 ## <topic>
 - <specific point>
   - <supporting detail>
-Merge sections about the same subject into ONE section, at most 6 sections. Keep every step that was tried and its result, and every number, name and date. Do NOT write these sections: {SKIP}. They are added separately. Do not write a title.
+Merge sections about the same subject into ONE section (at most 6 topic sections).{SKIP_RULE} Do not write a # title.
 {RULES}";
 
-/// NOTE_RULES for the template path: the content rules, without the ticket detection, the topic
-/// rule and the ticket examples, which would pull the model away from the template.
+/// NOTE_RULES for the template path: the content rules, without the topic-choosing rule
+/// or Auto examples that would pull the model away from the template's sections.
 const TEMPLATE_RULES: &str = "Rules:
-- Read the whole transcript, especially the end. The result of the call is usually in the last minute.
-- Write the fact, not the conversation. \"Restarting the phone fixed the dial tone.\" Never \"the user said\", \"the user noted\", \"they attempted\" or \"they confirmed\".
-- Skip greetings, hold music, small talk and repeated mishears.
-- Be specific: names, numbers, versions, dates, decisions. Never \"participants discussed issues\".
-- A detail that only supports one fact is an indented sub-bullet (two spaces, then \"- \").
-- Next steps are work still NOT done when the call ends: a bold imperative with the owner in parentheses, **Check the router** (Sam). Every open commitment counts (\"I'll send the photo\", \"Sam, can you …\"). Never list something already finished, and never list chatter (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
-- Leave out an open question that is already a next step.
-- Never invent anything that was not said. Do not guess a verdict, a price or a date.
-- \"You\" in the transcript is the user; \"Them\" is the other people. Speech recognition mishears words: write the meaning, or leave the word out. Never keep the bad word with a guess in parentheses.
-- Each point stays in the language it was spoken. Do not translate the meeting into one language. English stays English even when Persian is also spoken. English written in Persian letters (یس، فرسی) is English: write it in English letters.
+- Read the ENTIRE transcript from start to finish, especially the final minutes. Outcomes, final numbers, and agreements often happen at the very end.
+- Capture real substance: keep every concrete fact, number, dollar amount, date, deadline, reference number, name, trade-off, concern, and reason (\"why\"). Never write vague filler like \"participants discussed issues\".
+- Write the fact directly, not the conversation. \"Launch moves to Nov 21 while Stripe finishes review.\" Never \"the user said\", \"they noted\", \"they discussed\", or \"they confirmed\".
+- Skip greetings, hold music, small talk, and repeated speech-recognition mishears.
+- Use crisp hierarchy: top-level \"- \" bullets for main points, and 2-space indented \"  - \" sub-bullets for supporting numbers, context, or reasons.
+- Next steps are ONLY work still NOT done when the call ends, formatted as checkboxes:
+  - [ ] **<imperative task>** (<owner, plus due date if mentioned>)
+  Include every open commitment (\"I'll send the photo\", \"Sam, can you…\"). Never list something already finished, and never list chatter (\"wait a moment\", \"share your screen\", \"can you hear me\", \"let me check\").
+- Leave out an open question that was answered later or is already a next step.
+- Never invent anything that was not said. Do not guess a verdict, a price, or a date.
+- \"You\" in the transcript is the user; \"Them\" is the other speaker(s). Speech recognition mishears words: write the clearly intended meaning, or leave the word out. Never keep the bad word with a guess in parentheses.
+- Preserve spoken languages: each bullet stays in the language it was spoken. Never translate English into Persian or Persian into English. English written in Persian letters (یس، فرسی) is English—write it in English letters.
 - Section headings stay exactly as given, in the language they are given in, even when the bullets under them are in another language.
-Shape to copy (for the sections Updates, Blockers, Next steps):
-# Q3 report is ready, launch slips a week
+
+Example (for sections Updates, Blockers, Next steps):
+# Q3 Report Finalised & Launch Moves to Nov 21
 ## Updates
-- The Q3 report is finished and sent to finance
-- Launch moves from 14 to 21 November
-  - The payment provider's review takes five more working days
+- Q3 financial report is complete and sent to finance ($1.42M revenue, 6% above forecast)
+- Launch moves from November 14 to November 21
+  - Payment provider's compliance review needs five more business days
 ## Blockers
-- The staging server is still down, so nobody can test the new login
+- Staging server is still offline, blocking QA sign-off on the new login flow
 ## Next steps
-- **Ask IT for a new staging server by Monday** (Sam)";
+- [ ] **Request a replacement staging server from IT** (Sam — by Monday)";
 
 /// The standard section lines a template gets when it has no section of that kind.
 const STANDARD_LINES: [(Kind, &str, &str); 3] = [
     (Kind::Decisions, "Decisions", "only if decisions were made"),
-    (Kind::NextSteps, "Next steps", "**<imperative task>** (<who>), only work still not done"),
+    (Kind::NextSteps, "Next steps", "- [ ] **<imperative task>** (<owner>), only work still not done"),
     (Kind::OpenQuestions, "Open questions", "only questions left unanswered"),
 ];
 const OTHER_NOTES_LINE: &str = "## Other notes — anything important that fits none of the sections above";
+
+/// Strip accidental markdown code fences and conversational preambles ("Here are the notes:")
+/// before the `# Title` heading, then drop empty sections.
+pub fn clean_notes_markdown(raw: &str) -> String {
+    let lines: Vec<&str> = raw
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("```"))
+        .collect();
+    // If the model wrote a conversational preamble before `# Title`, drop the preamble.
+    let start = match lines.iter().position(|l| l.trim_start().starts_with("# ")) {
+        Some(idx) if lines[..idx].iter().all(|l| {
+            let t = l.trim();
+            t.is_empty() || !t.starts_with('#') && !t.starts_with("- ") && !t.starts_with("* ")
+        }) => idx,
+        _ => 0,
+    };
+    let cleaned = lines[start..].join("\n");
+    drop_empty_sections(cleaned.trim()).trim().to_string()
+}
 
 /// The model sometimes writes "## Open questions" followed by just "None". Remove such sections.
 pub fn drop_empty_sections(md: &str) -> String {
@@ -463,7 +501,7 @@ impl Llm {
         // The notes may be in Persian while the question is in English: answer in the question's language.
         let hint = if question.is_ascii() { "Answer in English." } else { "Reply in the same language as this message." };
         messages.push(json!({"role": "user", "content": format!("{question}\n\n({hint})")}));
-        self.chat_messages(messages, 1800, Duration::from_secs(300))
+        self.chat_messages(messages, 2200, Duration::from_secs(300))
     }
 
     /// One turn of the Ask bar on the Meetings list. `context` holds numbered excerpts of several
@@ -485,10 +523,14 @@ impl Llm {
         self.chat_with(KEYWORDS, question, 60, Duration::from_secs(20))
     }
 
-    /// Shared instructions for meeting notes: language, who "You" is, the user's own notes.
-    fn meeting_extra(language: Option<&str>, user: &str, has_mine: bool) -> String {
+    /// Shared instructions for meeting notes: language, who "You" is, vocab spellings, the user's own notes.
+    fn meeting_extra(language: Option<&str>, user: &str, vocab: &[String], has_mine: bool) -> String {
         let mut s = language.map(|l| format!("\n\nMost of the transcript is {l}. Still write each point in the language it was spoken. Do not translate English into Persian or Persian into English.")).unwrap_or_default();
         s.push_str(&who_is_you(user));
+        if !vocab.is_empty() {
+            let terms: Vec<&str> = vocab.iter().take(40).map(String::as_str).collect();
+            s.push_str(&format!("\n\nSpell these names and terms accurately when they appear in the call: {}.", terms.join(", ")));
+        }
         if has_mine {
             s.push_str(MY_NOTES_RULE);
         }
@@ -497,9 +539,13 @@ impl Llm {
 
     /// The same instructions for the template path: the user's notepad lines are kept, but the
     /// template's sections are the skeleton.
-    fn meeting_extra_t(language: Option<&str>, user: &str, has_mine: bool) -> String {
+    fn meeting_extra_t(language: Option<&str>, user: &str, vocab: &[String], has_mine: bool) -> String {
         let mut s = language.map(|l| format!("\n\nMost of the transcript is {l}. Still write each point in the language it was spoken. Do not translate English into Persian or Persian into English.")).unwrap_or_default();
         s.push_str(&who_is_you(user));
+        if !vocab.is_empty() {
+            let terms: Vec<&str> = vocab.iter().take(40).map(String::as_str).collect();
+            s.push_str(&format!("\n\nSpell these names and terms accurately when they appear in the call: {}.", terms.join(", ")));
+        }
         if has_mine {
             s.push_str(MY_NOTES_RULE_T);
         }
@@ -511,59 +557,69 @@ impl Llm {
         (minutes / 5).clamp(3, 10).to_string()
     }
 
-    /// The system prompt of the single pass. Auto is exactly the 0.3.0 prompt.
-    fn single_system(t: &Template, language: Option<&str>, user: &str, has_mine: bool, minutes: u32) -> String {
-        let auto = || format!("{}{}", MEETING.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, has_mine));
+    /// The system prompt of the single pass.
+    fn single_system(t: &Template, language: Option<&str>, user: &str, vocab: &[String], has_mine: bool, minutes: u32) -> String {
+        let auto = || format!("{}{}", MEETING.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, vocab, has_mine));
         match templates::shape(t) {
             Shape::Auto => auto(),
             Shape::Ticket => format!("{}{FORCE_TICKET}", auto()),
             Shape::Sections(t) => format!(
                 "{}{}",
                 fill(MEETING_T, &[("{RULES}", TEMPLATE_RULES), ("{ABOUT}", &about(t)), ("{SECTIONS}", &single_sections(t))]),
-                Self::meeting_extra_t(language, user, has_mine)
+                Self::meeting_extra_t(language, user, vocab, has_mine)
             ),
         }
     }
 
-    /// The system prompt of the final merge for Auto and Ticket (exactly the 0.3.0 prompt).
-    fn merge_system(language: Option<&str>, user: &str, has_mine: bool, minutes: u32) -> String {
-        format!("{}{}", MEETING_MERGE.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, has_mine))
+    /// The system prompt of the final merge for Auto and Ticket.
+    fn merge_system(t: &Template, language: Option<&str>, user: &str, vocab: &[String], has_mine: bool, minutes: u32) -> String {
+        let base = format!(
+            "{}{}",
+            MEETING_MERGE.replace("{N}", &Self::summary_bullets(minutes)).replace("{RULES}", NOTE_RULES),
+            Self::meeting_extra(language, user, vocab, has_mine)
+        );
+        if matches!(templates::shape(t), Shape::Ticket) {
+            format!("{base}{FORCE_TICKET}")
+        } else {
+            base
+        }
     }
 
-    /// The group prompt when the parts of a long Auto meeting don't fit one request.
-    fn mid_system(language: Option<&str>, user: &str) -> String {
-        let mid = MEETING_MERGE.replace("{N}", "6").replace("{RULES}", NOTE_RULES);
-        format!("{mid}{}", Self::meeting_extra(language, user, false))
+    /// The group prompt when the parts of a long Auto/Ticket meeting don't fit one request.
+    fn mid_system(language: Option<&str>, user: &str, vocab: &[String]) -> String {
+        let mid = fill(MEETING_CONDENSE, &[("{RULES}", NOTE_RULES), ("{SKIP_RULE}", "")]);
+        format!("{mid}{}", Self::meeting_extra(language, user, vocab, false))
     }
 
-    fn part_system(language: Option<&str>, user: &str) -> String {
-        format!("{}{}", MEETING_PART.replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, false))
+    fn part_system(language: Option<&str>, user: &str, vocab: &[String]) -> String {
+        format!("{}{}", MEETING_PART.replace("{RULES}", NOTE_RULES), Self::meeting_extra(language, user, vocab, false))
     }
 
-    /// Notes for a short meeting in one pass, in the shape of the meeting's template.
-    pub fn meeting_single(&mut self, transcript: &str, language: Option<&str>, my_notes: &str, user: &str, minutes: u32, t: &Template) -> Result<String> {
+    /// Notes for a short-to-medium call in one pass, in the shape of the meeting's template.
+    pub fn meeting_single(&mut self, transcript: &str, language: Option<&str>, my_notes: &str, user: &str, vocab: &[String], minutes: u32, t: &Template) -> Result<String> {
         let mine = my_notes.trim();
-        let system = Self::single_system(t, language, user, !mine.is_empty(), minutes);
+        let system = Self::single_system(t, language, user, vocab, !mine.is_empty(), minutes);
+        let capped: String = mine.chars().take(4_000).collect();
+        let out = self.chat_with(&system, &notes_body(&capped, transcript), 2400, Duration::from_secs(600))?;
         match templates::shape(t) {
-            Shape::Sections(t) => {
-                // The notepad counts against the context: a very long one is kept to its start.
-                let capped: String = mine.chars().take(4_000).collect();
-                let out = self.chat_with(&system, &notes_body(&capped, transcript), 1800, Duration::from_secs(600))?;
-                Ok(templates::keep_my_lines(templates::assemble(t, &out, &[]), mine))
+            Shape::Sections(t) => Ok(templates::keep_my_lines(templates::assemble(t, &out, &[]), mine)),
+            _ => {
+                let cleaned = clean_notes_markdown(&out);
+                Ok(if mine.is_empty() { cleaned } else { templates::keep_my_lines(cleaned, mine) })
             }
-            _ => Ok(drop_empty_sections(&self.chat_with(&system, &notes_body(mine, transcript), 1800, Duration::from_secs(600))?)),
         }
     }
 
     /// Detailed notes for one ~10-minute stretch of a long meeting (written while it is still going).
     /// Never depends on the template, so a template chosen later only redoes the merge.
-    pub fn meeting_part(&mut self, transcript: &str, language: Option<&str>, user: &str) -> Result<String> {
-        let system = Self::part_system(language, user);
-        self.chat_with(&system, transcript, 1200, Duration::from_secs(600))
+    pub fn meeting_part(&mut self, transcript: &str, language: Option<&str>, user: &str, vocab: &[String]) -> Result<String> {
+        let system = Self::part_system(language, user, vocab);
+        let out = self.chat_with(&system, transcript, 1400, Duration::from_secs(600))?;
+        Ok(clean_notes_markdown(&out))
     }
 
     /// A long meeting's parts don't fit in one request: merge them in groups first with `prompt`,
-    /// then merge those (as often as needed). `strip`: the sections the code collects itself.
+    /// then merge those (as often as needed). `strip`: optional sections to strip after condensing.
     fn merge_groups(&mut self, mut topics: Vec<String>, prompt: &str, strip: &[&str]) -> Result<Vec<String>> {
         while join_parts(&topics).chars().count() > MERGE_BUDGET && topics.len() > 1 {
             let mut groups: Vec<Vec<String>> = vec![Vec::new()];
@@ -586,70 +642,65 @@ impl Llm {
                     next.extend(g);
                     continue;
                 }
-                let merged = self.chat_with(prompt, &join_parts(&g), 1500, Duration::from_secs(600))?;
+                let merged = self.chat_with(prompt, &join_parts(&g), 1800, Duration::from_secs(600))?;
                 // The group's own title line would read as a topic in the next round.
-                let merged: String = merged.lines().filter(|l| !l.starts_with("# ")).collect::<Vec<_>>().join("\n");
-                next.push(strip_sections(&merged, strip));
+                let merged: String = clean_notes_markdown(&merged).lines().filter(|l| !l.starts_with("# ")).collect::<Vec<_>>().join("\n");
+                next.push(if strip.is_empty() { merged } else { strip_sections(&merged, strip) });
             }
             topics = next;
         }
         Ok(topics)
     }
 
-    /// Final notes from the part notes of a long meeting. The AI only writes the title and topics
-    /// (or the template's own sections); decisions, next steps and open questions are collected
-    /// from the parts by code, so the merge can never drop one (a small model rewriting everything
-    /// at once loses items).
-    pub fn meeting_merge(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, minutes: u32, t: &Template) -> Result<String> {
+    /// Final notes from the part notes of a long meeting.
+    /// For Auto and Ticket, the merge model receives the COMPLETE part notes so it sees final
+    /// outcomes, resolves answered questions and completed tasks, and writes an accurate title;
+    /// a safety check restores Decisions or Next steps from parts if the model omitted them.
+    pub fn meeting_merge(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, vocab: &[String], minutes: u32, t: &Template) -> Result<String> {
         if let Shape::Sections(t) = templates::shape(t) {
-            return self.meeting_merge_t(parts, language, my_notes, user, t);
+            return self.meeting_merge_t(parts, language, my_notes, user, vocab, t);
         }
         let mine = my_notes.trim();
-        let system = Self::merge_system(language, user, !mine.is_empty(), minutes);
-        let topics_only: Vec<String> = parts.iter().map(|p| strip_sections(p, &LIST_SECTIONS)).collect();
-        // Decisions, next steps etc. still come from the original parts below.
-        let topics_only = self.merge_groups(topics_only, &Self::mid_system(language, user), &LIST_SECTIONS)?;
-        let joined = join_parts(&topics_only);
+        let system = Self::merge_system(t, language, user, vocab, !mine.is_empty(), minutes);
+        let condensed = self.merge_groups(parts.to_vec(), &Self::mid_system(language, user, vocab), &[])?;
+        let joined = join_parts(&condensed);
         // The notepad also counts against the context: keep a very long one to its start.
-        let mine: String = mine.chars().take(4_000).collect();
-        let body = notes_body(&mine, &joined);
-        let mut notes = strip_sections(&self.chat_with(&system, &body, 1500, Duration::from_secs(600))?, &LIST_SECTIONS);
-        // Steps and the fix are copied from the parts, so a merge cannot turn a finished fix into a to-do.
-        let mut ticket = String::new();
-        for (heading, aliases) in [("Problem", &["problem"][..]), ("What we tried", &["what we tried", "steps"][..]), ("Solution", &["solution"][..])] {
-            let items = collect_items(parts, aliases);
-            if !items.is_empty() {
-                ticket.push_str(&format!("## {heading}\n{}\n\n", items.join("\n")));
+        let capped: String = mine.chars().take(4_000).collect();
+        let body = notes_body(&capped, &joined);
+        let mut notes = clean_notes_markdown(&self.chat_with(&system, &body, 2400, Duration::from_secs(600))?);
+        // Safety net: if parts recorded Decisions or Next steps and the merge dropped the whole
+        // section, append the collected items so commitments are never silently lost.
+        for (heading, aliases) in [("Decisions", &["decisions"][..]), ("Next steps", &["next steps", "action items"][..])] {
+            let has_section = notes.lines().any(|l| heading_is(l, aliases));
+            if !has_section {
+                let items = collect_items(parts, aliases);
+                if !items.is_empty() {
+                    notes.push_str(&format!("\n\n## {heading}\n{}", items.join("\n")));
+                }
             }
         }
-        if !ticket.is_empty() {
-            notes = insert_after_title(&notes, ticket.trim());
-        }
-        for (heading, aliases) in [("Decisions", &["decisions"][..]), ("Next steps", &["next steps", "action items"][..]), ("Open questions", &["open questions"][..])] {
-            let items = collect_items(parts, aliases);
-            if !items.is_empty() {
-                notes.push_str(&format!("\n\n## {heading}\n{}", items.join("\n")));
-            }
-        }
-        Ok(drop_empty_sections(notes.trim()))
+        let notes = drop_empty_sections(notes.trim());
+        Ok(if mine.is_empty() { notes } else { templates::keep_my_lines(notes, mine) })
     }
 
     /// The long path with a template: the model writes the template's own sections from the parts
-    /// without the sections the code places; then `assemble` puts everything in the template's order.
-    fn meeting_merge_t(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, t: &Template) -> Result<String> {
+    /// (seeing full context so titles and summaries reflect outcomes), then `assemble` puts every
+    /// section in the template's order with collected lists.
+    fn meeting_merge_t(&mut self, parts: &[String], language: Option<&str>, my_notes: &str, user: &str, vocab: &[String], t: &Template) -> Result<String> {
         let mine = my_notes.trim();
         let strip: Vec<&str> = templates::placed_kinds(t).into_iter().flat_map(|k| templates::aliases(k).iter().copied()).collect();
         let skip = templates::placed_headings(t).join(", ");
-        let condense = format!("{}{}", fill(MEETING_CONDENSE, &[("{RULES}", TEMPLATE_RULES), ("{SKIP}", &skip)]), Self::meeting_extra_t(language, user, false));
+        let skip_rule = format!(" Do NOT write these sections: {skip}. They are added separately.");
+        let condense = format!("{}{}", fill(MEETING_CONDENSE, &[("{RULES}", TEMPLATE_RULES), ("{SKIP_RULE}", &skip_rule)]), Self::meeting_extra_t(language, user, vocab, false));
         let topics: Vec<String> = parts.iter().map(|p| strip_sections(p, &strip)).collect();
         let topics = self.merge_groups(topics, &condense, &strip)?;
         let system = format!(
             "{}{}",
             fill(MEETING_MERGE_T, &[("{RULES}", TEMPLATE_RULES), ("{SKIP}", &skip), ("{ABOUT}", &about(t)), ("{SECTIONS}", &merge_sections(t))]),
-            Self::meeting_extra_t(language, user, !mine.is_empty())
+            Self::meeting_extra_t(language, user, vocab, !mine.is_empty())
         );
         let capped: String = mine.chars().take(4_000).collect();
-        let out = self.chat_with(&system, &notes_body(&capped, &join_parts(&topics)), 1500, Duration::from_secs(600))?;
+        let out = self.chat_with(&system, &notes_body(&capped, &join_parts(&topics)), 2200, Duration::from_secs(600))?;
         Ok(templates::keep_my_lines(templates::assemble(t, &out, parts), mine))
     }
 }
@@ -726,8 +777,8 @@ fn merge_sections(t: &Template) -> String {
 }
 
 /// Most part-note text sent in one merge request (characters). Leaves room in the 16k-token context
-/// for the rules and the answer, also for Persian, which takes more tokens per character.
-const MERGE_BUDGET: usize = 9_000;
+/// for the rules, notepad, and the 2,400-token answer, also for Persian (denser tokens per char).
+const MERGE_BUDGET: usize = 11_000;
 
 /// Granola-style notes: what the user typed is the skeleton and stays in their words. The window
 /// shows the user's lines in ink and the AI's additions in gray by matching them, so they must
@@ -737,21 +788,6 @@ const MERGE_BUDGET: usize = 9_000;
 const MY_NOTES_RULE_T: &str = "\n\nThe user typed their own notes during the meeting (given first, under 'My own notes'). Copy each of their lines into your notes exactly as written (fix typos only), as a bullet under the section where it fits best, before the bullets you add. Their headings are not sections here: only the sections listed above are. A line of theirs that fits no section goes under '## Other notes'. Never drop or reword one of their lines.";
 
 const MY_NOTES_RULE: &str = "\n\nThe user typed their own notes during the meeting (given first, under 'My own notes'). They are the skeleton of your notes: keep their headings ('#' or '##' lines) as ## sections, in their order. Copy each of their bullet lines exactly as written (fix typos only). Under each of their headings add the details from the meeting as more bullets. Topics they did not write about go after their sections. Never drop or reword one of their lines.";
-
-/// Sections gathered from the part notes, so the merge cannot drop the fix or a leftover task.
-const LIST_SECTIONS: [&str; 8] = [
-    "problem", "what we tried", "steps", "solution", "decisions", "next steps", "action items", "open questions",
-];
-
-/// Put `block` under the title line. The ticket (problem, steps, solution) stays above other topics.
-fn insert_after_title(notes: &str, block: &str) -> String {
-    let notes = notes.trim();
-    let Some(rest) = notes.strip_prefix("# ") else {
-        return format!("{block}\n\n{notes}");
-    };
-    let (title, body) = rest.split_once('\n').unwrap_or((rest, ""));
-    format!("# {title}\n\n{block}\n\n{}", body.trim())
-}
 
 fn heading_is(line: &str, names: &[&str]) -> bool {
     line.strip_prefix("## ").is_some_and(|h| names.iter().any(|n| h.trim().trim_end_matches(':').eq_ignore_ascii_case(n)))
@@ -795,66 +831,56 @@ pub(crate) fn collect_items(parts: &[String], names: &[&str]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Digest, Sha256};
 
-    fn digest(parts: &[String]) -> String {
-        let mut h = Sha256::new();
-        for p in parts {
-            h.update(p.as_bytes());
-            h.update([0u8]);
-        }
-        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    /// Auto must not move: every prompt it builds is byte for byte the 0.3.0 one. The digests were
-    /// taken from the 0.3.0 code (26f42ed) with the same loops, before any change to this file.
     #[test]
-    fn auto_prompts_are_byte_for_byte_0_3_0() {
+    fn auto_and_ticket_prompts_are_granola_style_and_complete() {
         let auto = templates::resolve(&[], "auto");
         let unknown = templates::resolve(&[], "c_removed");
-        let (mut single, mut single_unknown, mut merge, mut mid, mut part, mut body) = (vec![], vec![], vec![], vec![], vec![], vec![]);
-        for language in [None, Some("Persian")] {
-            for user in ["", "Sam"] {
-                for mine in ["", "- ask Sam about Q3"] {
-                    for minutes in [7u32, 30, 80] {
-                        single.push(Llm::single_system(&auto, language, user, !mine.is_empty(), minutes));
-                        single_unknown.push(Llm::single_system(&unknown, language, user, !mine.is_empty(), minutes));
-                        merge.push(Llm::merge_system(language, user, !mine.is_empty(), minutes));
-                    }
-                    mid.push(Llm::mid_system(language, user));
-                    part.push(Llm::part_system(language, user));
-                    body.push(notes_body(mine, "[00:01] Them: hello"));
-                }
-            }
-        }
-        let frozen = "0ccf8eb1c8342e3890f8bf3b001999b4666acf282a0dc586a7a55f1a78a30dd6";
-        assert_eq!(digest(&single), frozen);
-        assert_eq!(single.iter().map(|s| s.len()).sum::<usize>(), 102464);
-        assert_eq!(digest(&single_unknown), frozen, "a removed template reads as Auto");
-        assert_eq!(digest(&merge), "92051e17b4b891e65c55fa783dce1197c907128fde3c5402459c71c5833dc236");
-        assert_eq!(digest(&mid), "ef29f7899b0052f4b7a4e6cc64589b71a23dbbb704e2243632e7ed2098c1e24b");
-        assert_eq!(digest(&part), "55a510c3e635829efd8ab4561d7393d826925aa0077865b0a29c39bd6bc3bfe5");
-        assert_eq!(digest(&body), "49b6887b332dd389408bc2ca29ea3de5a17fa0c72895c3c47856b9dc8ee6b62c");
+        let ticket = templates::resolve(&[], "ticket");
+        let vocab = vec!["Acme".to_string(), "Stripe".to_string()];
+
+        let a = Llm::single_system(&auto, None, "Sam", &vocab, true, 30);
+        let u = Llm::single_system(&unknown, None, "Sam", &vocab, true, 30);
+        assert_eq!(a, u, "a removed template resolves to Auto");
+        assert!(a.contains("Granola"));
+        assert!(a.contains("Spell these names and terms accurately"));
+        assert!(a.contains("Acme, Stripe"));
+        assert!(a.contains("- [ ] **"));
+        assert!(a.contains(MY_NOTES_RULE) && !a.contains(MY_NOTES_RULE_T));
+        assert!(!a.contains("paste into a ticket"), "Auto should not frame normal calls as IT tickets");
+        assert!(!a.contains("{"), "no unexpanded placeholders");
+
+        let t = Llm::single_system(&ticket, None, "Sam", &vocab, true, 30);
+        assert_eq!(t, format!("{a}{FORCE_TICKET}"));
+        assert!(t.contains("## Problem") && t.contains("## What we tried") && t.contains("## Solution"));
+
+        let m = Llm::merge_system(&auto, Some("Persian"), "Sam", &vocab, true, 60);
+        assert!(m.contains("Synthesise them into ONE cohesive"));
+        assert!(m.contains("drop questions that were answered in a later part"));
+        assert!(!m.contains("{"), "no unexpanded placeholders in merge");
+
+        let mid = Llm::mid_system(None, "Sam", &vocab);
+        assert!(!mid.contains("{"), "no unexpanded placeholders in mid");
+
+        let part = Llm::part_system(None, "Sam", &vocab);
+        assert!(!part.contains("{"), "no unexpanded placeholders in part");
     }
 
     #[test]
-    fn ticket_is_auto_plus_one_paragraph() {
-        let auto = templates::resolve(&[], "auto");
-        let ticket = templates::resolve(&[], "ticket");
-        let a = Llm::single_system(&auto, None, "Sam", true, 30);
-        let t = Llm::single_system(&ticket, None, "Sam", true, 30);
-        assert_eq!(t, format!("{a}{FORCE_TICKET}"));
+    fn clean_notes_markdown_strips_fences_preambles_and_empty_sections() {
+        let raw = "Sure, here are the notes:\n```markdown\n# Q4 Renewal with Acme\n\n## Pricing\n- $25,500 for 45 seats\n\n## Open questions\n- None\n```\n";
+        assert_eq!(clean_notes_markdown(raw), "# Q4 Renewal with Acme\n\n## Pricing\n- $25,500 for 45 seats");
     }
 
     #[test]
     fn template_prompts() {
         let one = templates::resolve(&[], "one_on_one");
-        let p = Llm::single_system(&one, Some("Persian"), "Sam", true, 30);
+        let p = Llm::single_system(&one, Some("Persian"), "Sam", &[], true, 30);
         assert!(p.contains("This meeting is: A one-to-one between the user and one other person.\n"));
         assert!(p.contains("## Updates — what each person reported since last time: progress, results, numbers\n## Feedback"));
-        assert!(p.contains("## Decisions — only if decisions were made\n## Next steps — **<imperative task>** (<who>), only work still not done\n## Open questions — only questions left unanswered\n## Other notes — anything important"));
+        assert!(p.contains("## Decisions — only if decisions were made\n## Next steps — - [ ] **<imperative task>** (<owner>), only work still not done\n## Open questions — only questions left unanswered\n## Other notes — anything important"));
         assert!(p.contains(MY_NOTES_RULE_T) && !p.contains(MY_NOTES_RULE));
-        assert!(p.contains(TEMPLATE_RULES) && !p.contains("Shape to copy when the call fixes something"));
+        assert!(p.contains(TEMPLATE_RULES) && !p.contains("Office phones are back online"));
         assert!(!p.contains("{"), "no placeholder left");
         // A custom template without "about": its name. Merge lists only the model's sections.
         let custom = Template {
@@ -867,14 +893,14 @@ mod tests {
             ],
         };
         let s = single_sections(&custom);
-        assert_eq!(s, "## Done — finished since last time\n## Next steps — **<imperative task>** (<who>), only work still not done\n## Decisions — only if decisions were made\n## Open questions — only questions left unanswered\n## Other notes — anything important that fits none of the sections above");
+        assert_eq!(s, "## Done — finished since last time\n## Next steps — - [ ] **<imperative task>** (<owner>), only work still not done\n## Decisions — only if decisions were made\n## Open questions — only questions left unanswered\n## Other notes — anything important that fits none of the sections above");
         assert_eq!(about(&custom), "a \"Stand-up\" meeting.");
         assert_eq!(merge_sections(&custom), "## Done — finished since last time\n## Other notes — anything important that fits none of the sections above");
         assert_eq!(templates::placed_headings(&custom).join(", "), "Next steps, Decisions, Open questions");
         // A user's text is never expanded again.
         let mut sneaky = custom.clone();
         sneaky.about = "Says {SECTIONS} and {RULES}".into();
-        let p = Llm::single_system(&sneaky, None, "", false, 10);
+        let p = Llm::single_system(&sneaky, None, "", &[], false, 10);
         assert!(p.contains("This meeting is: Says {SECTIONS} and {RULES}\n"));
     }
 }

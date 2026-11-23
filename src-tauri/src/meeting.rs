@@ -57,10 +57,11 @@ pub struct Resume {
 /// Notes for long meetings are written in ~10-minute stretches while the meeting is still going,
 /// so when it ends only the last stretch and a final merge are left.
 pub const WINDOW_SECS: f32 = 600.0;
-/// Up to this much transcript (about 20 minutes of talk) the notes are written in one pass.
-const SINGLE_PASS_CHARS: usize = 14_000;
+/// Up to this much transcript (~25–30 minutes of talk, after coalescing short pauses) notes are
+/// written holistically in a single pass inside the 16k-token context.
+const SINGLE_PASS_CHARS: usize = 22_000;
 /// Persian takes about 1.5x more model tokens per character, so less of it fits in one pass.
-const SINGLE_PASS_CHARS_PERSIAN: usize = 10_000;
+const SINGLE_PASS_CHARS_PERSIAN: usize = 14_000;
 /// How often a running meeting is saved to the database.
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(15);
 
@@ -91,6 +92,28 @@ struct Track {
     wav: Option<hound::WavWriter<std::io::BufWriter<std::fs::File>>>,
 }
 
+/// When someone talks continuously past MAX_CHUNK_SECS without a 0.7 s pause, split at the
+/// quietest 100 ms valley in the last 5 seconds so we avoid slicing a word in half.
+fn quietest_cut(samples: &[f32], rate: usize) -> usize {
+    let win = (rate / 10).max(1); // 100 ms
+    let search_from = samples.len().saturating_sub(rate * 5);
+    if samples.len() <= search_from + win {
+        return samples.len();
+    }
+    let mut best_pos = samples.len();
+    let mut best_energy = f32::INFINITY;
+    let mut pos = search_from;
+    while pos + win <= samples.len() {
+        let e: f32 = samples[pos..pos + win].iter().map(|s| s * s).sum();
+        if e < best_energy {
+            best_energy = e;
+            best_pos = pos + win / 2;
+        }
+        pos += win / 2;
+    }
+    best_pos
+}
+
 impl Track {
     /// wav: where to save the audio, or None to keep nothing but the transcript (the default).
     fn open(who: &'static str, device: &str, wav: Option<std::path::PathBuf>, offset: f32) -> anyhow::Result<Self> {
@@ -118,7 +141,11 @@ impl Track {
             let cut = if all && self.pending.len() <= max {
                 self.pending.len()
             } else if self.pending.len() > max {
-                core.asr.read().as_ref().and_then(|a| a.pause_cut(&self.pending[..max])).unwrap_or(max)
+                core.asr
+                    .read()
+                    .as_ref()
+                    .and_then(|a| a.pause_cut(&self.pending[..max]))
+                    .unwrap_or_else(|| quietest_cut(&self.pending[..max], audio::RATE as usize))
             } else {
                 match core.asr.read().as_ref().and_then(|a| a.pause_cut(&self.pending)) {
                     Some(c) => c,
@@ -131,7 +158,7 @@ impl Track {
             let chunk: Vec<f32> = self.pending.drain(..cut).collect();
             let start = self.pending_start;
             self.pending_start += cut as f32 / rate;
-            if audio::rms(&chunk) > 0.002 {
+            if audio::rms(&chunk) > 0.001 {
                 let text = core.asr.read().as_ref().map(|a| a.transcribe(&chunk, language, vocab));
                 if let Some(Ok(text)) = text {
                     if !text.trim().is_empty() {
@@ -360,13 +387,25 @@ impl Meeting {
         let core_notes = core.clone();
         log::log(format!("meeting started ({} tracks)", them.len() + 1));
         {
-            let (appt, named, core_ol) = (appointment.clone(), segments.clone(), core.clone());
+            let (appt, named, core_ol, run_ol) = (appointment.clone(), segments.clone(), core.clone(), running.clone());
             let (user_name, email) = {
                 let s = core.settings.read();
                 (s.user_name.clone(), s.email.clone())
             };
             std::thread::spawn(move || {
-                let Some(found) = crate::outlook::current(&user_name, &email) else { return };
+                // Calls often start a minute or two before the scheduled calendar time, or Outlook
+                // COM is slow on cold start: try immediately, then once more after 60 s if needed.
+                let mut found = crate::outlook::current(&user_name, &email);
+                if found.is_none() {
+                    for _ in 0..60 {
+                        if !run_ol.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                    found = crate::outlook::current(&user_name, &email);
+                }
+                let Some(found) = found else { return };
                 *appt.lock() = found.clone();
                 {
                     let mut lines = named.lock();
@@ -501,9 +540,10 @@ impl Meeting {
                     if !chunk.is_empty() {
                         let t = Instant::now();
                         let user = core_notes.settings.read().user_name.clone();
-                        let others = appt_for_notes.lock().people.clone();
-                        let body = with_people(&transcript_text(&chunk), &others);
-                        let note = core_notes.llm.lock().as_mut().map(|l| l.meeting_part(&body, main_language(&chunk), &user));
+                        let vocab = core_notes.vocab();
+                        let appt = appt_for_notes.lock().clone();
+                        let body = with_context(&transcript_for_llm(&chunk), &appt.subject, &appt.people);
+                        let note = core_notes.llm.lock().as_mut().map(|l| l.meeting_part(&body, main_language(&chunk), &user, &vocab));
                         match note {
                             Some(Ok(n)) => {
                                 log::log(format!("meeting notes: part {} written during the meeting in {:.0}s", parts.lock().len() + 1, t.elapsed().as_secs_f32()));
@@ -546,17 +586,36 @@ fn label_segments(segments: &mut [Segment], people: &[String]) {
     }
 }
 
-fn with_people(transcript: &str, others: &[String]) -> String {
-    let header = crate::smart::people_header(others);
+fn with_context(transcript: &str, subject: &str, others: &[String]) -> String {
+    let mut header = String::new();
+    let subject = subject.trim();
+    if !subject.is_empty() {
+        header.push_str(&format!("Calendar title: {subject}\n"));
+    }
+    let people = crate::smart::people_header(others);
+    if !people.is_empty() {
+        header.push_str(&people);
+    } else if !header.is_empty() {
+        header.push('\n');
+    }
     if header.is_empty() { transcript.to_string() } else { format!("{header}{transcript}") }
 }
 
-/// The finished notes: short meetings in one pass; long ones from the part notes written during the
-/// meeting (live) plus notes for whatever is left, merged. Without live (Rewrite) every part is
-/// written now.
+/// The finished notes: short-to-medium meetings in one pass; long ones from the part notes written
+/// during the meeting (live) plus notes for whatever is left, merged. Without live (Rewrite) every
+/// part is written now.
 /// Returns the notes and the part notes behind them (with the meeting time they cover), which are
 /// saved so a resumed meeting can reuse them.
-pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_notes: &str, others: &[String], template: &crate::templates::Template) -> anyhow::Result<(String, Vec<String>, f32)> {
+#[allow(clippy::too_many_arguments)]
+pub fn write_notes(
+    core: &Core,
+    segs: &[Segment],
+    live: Option<LiveNotes>,
+    my_notes: &str,
+    subject: &str,
+    others: &[String],
+    template: &crate::templates::Template,
+) -> anyhow::Result<(String, Vec<String>, f32)> {
     let (mut parts, from) = match live {
         Some(mut l) => {
             if let Some(h) = l.handle.take() {
@@ -568,29 +627,30 @@ pub fn write_notes(core: &Core, segs: &[Segment], live: Option<LiveNotes>, my_no
         None => (Vec::new(), 0.0),
     };
     let user = core.settings.read().user_name.clone();
+    let vocab = core.vocab();
     let language = main_language(segs);
     let end = segs.iter().map(|s| s.end.max(s.start)).fold(0.0f32, f32::max);
     let minutes = (end / 60.0).round() as u32;
     let mut guard = core.llm.lock();
     let llm = guard.as_mut().ok_or_else(|| anyhow::anyhow!("the writing AI isn't running"))?;
-    let full = with_people(&transcript_text(segs), others);
+    let full = with_context(&transcript_for_llm(segs), subject, others);
     // One note from the whole call, including a resume. Saved part notes are only for a long call
     // that does not fit in one pass. A short resume must not keep the thin notes from the first half.
     let single = if language == Some("Persian") { SINGLE_PASS_CHARS_PERSIAN } else { SINGLE_PASS_CHARS };
     if full.chars().count() <= single {
-        return Ok((llm.meeting_single(&full, language, my_notes, &user, minutes, template)?, Vec::new(), 0.0));
+        return Ok((llm.meeting_single(&full, language, my_notes, &user, &vocab, minutes, template)?, Vec::new(), 0.0));
     }
     let mut a = from;
     while a <= end {
         let chunk = window(segs, a, a + WINDOW_SECS);
         if !chunk.is_empty() {
             log::log(format!("meeting notes: part {}", parts.len() + 1));
-            parts.push(llm.meeting_part(&with_people(&transcript_text(&chunk), others), language, &user)?);
+            parts.push(llm.meeting_part(&with_context(&transcript_for_llm(&chunk), subject, others), language, &user, &vocab)?);
         }
         a += WINDOW_SECS;
     }
     log::log(format!("meeting notes: merging {} parts", parts.len()));
-    let notes = llm.meeting_merge(&parts, language, my_notes, &user, minutes, template)?;
+    let notes = llm.meeting_merge(&parts, language, my_notes, &user, &vocab, minutes, template)?;
     // Covered up to where the talk actually ended, so a resumed meeting's new words start a new stretch.
     Ok((notes, parts, end))
 }
@@ -603,7 +663,7 @@ pub fn simulate_live(core: &Core, segs: &[Segment]) -> LiveNotes {
     let (mut parts, mut from) = (Vec::new(), 0.0f32);
     while from + WINDOW_SECS + 60.0 <= end {
         let chunk = window(segs, from, from + WINDOW_SECS);
-        if let Some(Ok(n)) = core.llm.lock().as_mut().map(|l| l.meeting_part(&transcript_text(&chunk), main_language(&chunk), "")) {
+        if let Some(Ok(n)) = core.llm.lock().as_mut().map(|l| l.meeting_part(&transcript_for_llm(&chunk), main_language(&chunk), "", &[])) {
             parts.push(n);
         }
         from += WINDOW_SECS;
@@ -618,10 +678,40 @@ impl LiveNotes {
     }
 }
 
-/// "[03:12] Them: …" lines, the form the AI gets.
+/// "[03:12] Them: …" lines, one per raw segment.
 pub fn transcript_text(segs: &[Segment]) -> String {
     segs.iter()
         .map(|s| format!("[{:02}:{:02}] {}: {}", s.start as u32 / 60, s.start as u32 % 60, s.who, s.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Coalesced transcript for the LLM: merges consecutive lines from the same speaker separated by
+/// brief pauses (<= 5 s, up to 400 chars per turn) so sentences read naturally and ~25% more talk
+/// fits into single-pass notes without repetitive timestamps.
+pub fn transcript_for_llm(segs: &[Segment]) -> String {
+    let mut turns: Vec<(String, f32, f32, String)> = Vec::new();
+    for s in segs {
+        let text = s.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let end = s.end.max(s.start);
+        let merge = turns.last().is_some_and(|(who, _, prev_end, body)| {
+            who == &s.who && (s.start - *prev_end) <= 5.0 && body.chars().count() + text.chars().count() + 1 <= 400
+        });
+        if merge {
+            let last = turns.last_mut().unwrap();
+            last.2 = last.2.max(end);
+            last.3.push(' ');
+            last.3.push_str(text);
+        } else {
+            turns.push((s.who.clone(), s.start, end, text.to_string()));
+        }
+    }
+    turns
+        .into_iter()
+        .map(|(who, start, _, text)| format!("[{:02}:{:02}] {}: {}", start as u32 / 60, start as u32 % 60, who, text))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -940,5 +1030,33 @@ mod tests {
         assert!(!is_echo(&yes, &all));
         assert!(is_echo(&echo, &all));
         assert_eq!(clean_transcript(&all).len(), 2);
+    }
+
+    #[test]
+    fn transcript_for_llm_coalesces_short_same_speaker_pauses() {
+        let segs = vec![
+            Segment { who: "Sam".into(), start: 10.0, end: 12.0, text: "Yeah so about the quote".into() },
+            Segment { who: "Sam".into(), start: 14.0, end: 17.0, text: "we can do twelve thousand.".into() },
+            Segment { who: "You".into(), start: 18.0, end: 20.0, text: "Sounds good.".into() },
+            Segment { who: "Sam".into(), start: 30.0, end: 32.0, text: "I'll send it Thursday.".into() },
+            Segment { who: "Sam".into(), start: 45.0, end: 47.0, text: "After a long pause.".into() },
+        ];
+        let got = transcript_for_llm(&segs);
+        assert_eq!(
+            got,
+            "[00:10] Sam: Yeah so about the quote we can do twelve thousand.\n[00:18] You: Sounds good.\n[00:30] Sam: I'll send it Thursday.\n[00:45] Sam: After a long pause."
+        );
+    }
+
+    #[test]
+    fn quietest_cut_finds_silence_valley() {
+        let rate = 16_000usize;
+        let mut samples = vec![0.4f32; rate * 10];
+        // Silent 300 ms valley centered at 7.5 s (inside the last 5 s search window).
+        for s in &mut samples[rate * 7 + rate / 3..rate * 7 + rate * 2 / 3] {
+            *s = 0.0;
+        }
+        let cut = quietest_cut(&samples, rate);
+        assert!(cut >= rate * 7 + rate / 3 && cut <= rate * 7 + rate * 2 / 3, "cut was {cut}");
     }
 }
