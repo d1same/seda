@@ -1,17 +1,9 @@
-# Publish a Seda release. 0.2.10 is already on GitHub. Write the real change
-# in notes.md, then paste this for the next release:
+# Publish a Seda Windows release. Write release notes in notes.md, then run:
 #
-#   cd Z:\Projects\Whisper\seda
-#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-#   .\scripts\release.ps1 -Version 0.2.11 -Notes notes.md
-#
-# When the window says to expect a password, press Enter. The password is empty.
-# The installer is published to GitHub and copied to Z:\Projects\Whisper\installer.
-# README.md lists the errors from the 0.2.10 publish and what to do for each one.
+#   .\scripts\release.ps1 -Version 0.4.3 -Notes notes.md
 #
 # -Version is written into package.json, src-tauri/tauri.conf.json, and
-# src-tauri/Cargo.toml. The signing key stays at
-# %USERPROFILE%\.tauri\seda-updater.key.
+# src-tauri/Cargo.toml. The signing key lives at %USERPROFILE%\.tauri\seda-updater.key.
 # If the installer is already built, add -SkipBuild to sign and publish that file.
 param(
     [string] $Version,
@@ -174,30 +166,21 @@ function Repair-VulkanShaderSteps([string] $TargetDir) {
     if ($changed) { Write-Host "The shader tool now builds in its own short folder and waits its turn." }
 }
 
-# Compiler files sit next to the repo, inside Z:\Projects\Whisper or Z:\Projects\Seda.
+# Compiler artifacts sit in short sibling directories next to the repo checkout.
 function Get-SedaLayout([string] $RepoRoot) {
     $given = $RepoRoot.TrimEnd('\', '/')
     $full = $given
     if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
         try { $full = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/') } catch { }
     }
-    $allowed = @(
-        "Z:\Projects\Whisper\seda",
-        "\\10.1.20.4\Ai Projects\Projects\Whisper\seda",
-        "Z:\Projects\Seda\seda",
-        "\\10.1.20.4\Ai Projects\Projects\Seda\seda"
-    )
-    $root = $null
-    foreach ($candidate in @($full, $given)) {
-        if ($allowed -contains $candidate) { $root = $candidate; break }
-    }
-    if (-not $root) {
+    $valid = -not [string]::IsNullOrWhiteSpace($full) -and (Test-Path -LiteralPath (Join-Path $full "src-tauri\tauri.conf.json"))
+    if (-not $valid) {
         return [pscustomobject]@{ Root = $full; Allowed = $false; Target = $null; Shader = $null; Shelf = $null }
     }
-    $parent = Split-Path $root -Parent
-    if ($root -match '\\') { $parent = ($parent -replace '/', '\') }
+    $parent = Split-Path $full -Parent
+    if ($full -match '\\') { $parent = ($parent -replace '/', '\') }
     [pscustomobject]@{
-        Root = $root
+        Root = $full
         Allowed = $true
         Target = Join-ProjectPath $parent "b"
         Shader = Join-ProjectPath $parent "shader"
@@ -312,23 +295,9 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $layout = Get-SedaLayout $root
-if (-not $layout.Allowed) { throw "Run this from Z:\Projects\Whisper\seda. This copy is $($layout.Root)." }
+if (-not $layout.Allowed) { throw "Run this from the Seda repository root. Current path: $($layout.Root)." }
 
-# Leftovers from earlier copies. Compiler output stays next to the repo.
-function Remove-OldFolder([string] $dir) {
-    if (-not (Test-Path -LiteralPath $dir)) { return }
-    Write-Host "Removing $dir"
-    cmd /c "attrib -r `"$dir`" /s /d & rmdir /s /q `"$dir`"" | Out-Null
-    if (Test-Path -LiteralPath $dir) { Write-Host "Could not remove $dir. Close anything using it and delete that folder by hand." }
-    else { Write-Host "Removed $dir" }
-}
 if ($SkipBuild) { Write-Host "Signing the installer that is already built." }
-else {
-    Remove-OldFolder "C:\seda"
-    Remove-OldFolder "C:\s"
-    Remove-OldFolder "Z:\b"
-    Remove-OldFolder "Z:\Projects\Whisper\build"
-}
 if ($CleanupOnly) { return }
 if (-not $Version -or -not $Notes) { throw "Pass -Version and -Notes." }
 $noteText = Read-ReleaseNotes $Notes

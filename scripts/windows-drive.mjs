@@ -1,7 +1,6 @@
 // Vite asks Windows for the real path of a mapped drive, then tries to turn
-// "\\server\share" back into "Z:". Its parser stops at the first space, so
-// "\\10.1.20.4\Ai Projects" becomes "\\10.1.20.4\Ai" and the project path
-// loses the "Ai". Rewrite those paths ourselves, before Vite sees them.
+// "\\server\share" back into a drive letter. Its parser stops at the first space,
+// so "\\fileserver\My Projects" gets truncated. Rewrite mapped paths before Vite sees them.
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 

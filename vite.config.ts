@@ -5,8 +5,7 @@ import react from "@vitejs/plugin-react";
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
-// The project lives on Z:, whose share name is "Ai Projects". Vite splits that
-// path on the space unless scripts/windows-drive.mjs rewrites it first.
+// Handle mapped network drives whose share names contain spaces before Vite resolves paths.
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
@@ -31,7 +30,7 @@ export default defineConfig(() => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
-      // A network folder (Z:) cannot use the Windows folder watch. Polling stays quiet there.
+      // Polling keeps file watching reliable on mapped network drives as well as local disks.
       usePolling: true,
       interval: 1000,
     },

@@ -1,9 +1,7 @@
 # Build settings for Windows. Adjust the paths below to where these tools are installed on your PC.
 [build]
-# Z: is the network folder \\10.1.20.4\Ai Projects. Windows counts that full
-# name, and a folder can be at most 248 characters. These paths are relative
-# to src-tauri, so they land next to the repo: Z:\Projects\Whisper\b today,
-# or Z:\Projects\Seda\b after the folder is renamed.
+# Keep compiler artifacts in a short sibling directory to stay well within Windows MAX_PATH
+# limits when building CMake / Vulkan shader targets.
 target-dir = "../../b"
 
 [env]
