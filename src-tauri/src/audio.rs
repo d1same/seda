@@ -266,7 +266,10 @@ pub fn load_wav(path: &str) -> Result<Vec<f32>> {
 }
 
 pub fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
-    if from == to || input.is_empty() {
+    if from == 0 || to == 0 || input.is_empty() {
+        return Vec::new();
+    }
+    if from == to {
         return input.to_vec();
     }
     let ratio = from as f64 / to as f64;

@@ -40,17 +40,28 @@ exit 0
 
 /// The appointment that contains the current time, or nothing if Outlook is closed or has no match.
 pub fn current(user_name: &str, email: &str) -> Option<Appointment> {
-    let mut child = Command::new("powershell.exe")
+    let ps = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+        .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    let mut child = Command::new(ps)
         .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .creation_flags(0x0800_0000)
         .spawn()
         .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        out
+    });
     let started = Instant::now();
     loop {
         if started.elapsed() > Duration::from_secs(12) {
             let _ = child.kill();
+            let _ = child.wait();
             return None;
         }
         match child.try_wait() {
@@ -58,8 +69,7 @@ pub fn current(user_name: &str, email: &str) -> Option<Appointment> {
                 if !status.success() {
                     return None;
                 }
-                let mut out = String::new();
-                child.stdout.as_mut()?.read_to_string(&mut out).ok()?;
+                let out = reader.join().ok()?;
                 let parsed = smart::parse_appointment(&out)?;
                 let people = smart::other_people(&parsed.people, user_name, email);
                 if parsed.subject.is_empty() && people.is_empty() {

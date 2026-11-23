@@ -1,7 +1,8 @@
-/** English is always understood. This is the one extra language you can add ("en" = none, English
- *  only). Persian uses its own fine-tuned model; the rest share the multilingual one. */
+/** Spoken language choices. "auto" lets Whisper large-v3-turbo detect any of 99+ languages
+ *  automatically; Persian ("fa") uses its own fine-tuned model; the rest share multilingual. */
 export const LANGUAGES: { code: string; name: string; native: string; rtl?: boolean }[] = [
-  { code: "en", name: "English only", native: "None" },
+  { code: "auto", name: "Any language (99+)", native: "Auto-detect" },
+  { code: "en", name: "English only", native: "English" },
   { code: "fa", name: "Persian", native: "فارسی", rtl: true },
   { code: "zh", name: "Chinese", native: "中文" },
   { code: "hi", name: "Hindi", native: "हिन्दी" },

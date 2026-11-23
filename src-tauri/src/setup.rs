@@ -241,10 +241,20 @@ pub fn reconcile(s: &mut crate::settings::Settings) -> bool {
     exists(&s.whisper_model) && writing_ok
 }
 
+/// True if `path` has a local drive-letter prefix (rejects UNC, device paths, and forward-slash variants).
+pub fn is_local_drive_path(path: &str) -> bool {
+    use std::path::{Component, Prefix};
+    let normalized = path.trim().replace('/', "\\");
+    if normalized.starts_with(r"\\") {
+        return false;
+    }
+    matches!(Path::new(&normalized).components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_)))
+}
+
 /// True if path is an existing file inside the models folder (for the engine: llama-server.exe).
 pub fn is_model_path(path: &str, engine: bool) -> bool {
-    if path.starts_with(r"\\") || path.starts_with("//") {
-        return false; // network path
+    if !is_local_drive_path(path) {
+        return false; // network or non-local path
     }
     let (Ok(p), Ok(root)) = (std::fs::canonicalize(path), std::fs::canonicalize(models_dir())) else { return false };
     let name_ok = !engine || p.file_name().is_some_and(|n| n.eq_ignore_ascii_case("llama-server.exe"));
@@ -275,8 +285,7 @@ pub fn download_missing(pack: &str, language: &str, progress: &dyn Fn(&str, u64,
             None => dir.join(it.file),
         };
         crate::log::log(format!("downloading {} from {}", it.name, it.url));
-        fetch(it.url, &target, &|d, t| progress(it.id, d, t)).with_context(|| format!("Downloading {}", it.name))?;
-        verify(&target, it.sha256).with_context(|| format!("Checking {}", it.name))?;
+        fetch_and_verify(it.url, &target, it.sha256, &|d, t| progress(it.id, d, t)).with_context(|| format!("Downloading {}", it.name))?;
         if let Some(sub) = it.zip_into {
             unzip(&target, &dir.join(sub))?;
             let _ = std::fs::remove_file(&target);
@@ -289,13 +298,13 @@ pub fn download_missing(pack: &str, language: &str, progress: &dyn Fn(&str, u64,
     Ok(())
 }
 
-fn fetch(url: &str, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<()> {
+fn fetch_and_verify(url: &str, dest: &Path, expected_sha256: &str, progress: &dyn Fn(u64, u64)) -> Result<()> {
     let part = dest.with_file_name(format!("{}.part", dest.file_name().unwrap().to_string_lossy()));
     let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .timeout(None)
-        .user_agent("Seda/0.1")
+        .user_agent("Seda/0.4")
         .build()?;
     let mut req = client.get(url);
     if have > 0 {
@@ -330,6 +339,9 @@ fn fetch(url: &str, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<()> {
     if total > 0 && done != total {
         bail!("Download incomplete ({done} of {total} bytes) — try again to resume");
     }
+    // Verify SHA-256 on the staged .part file BEFORE moving into place so an unverified file
+    // is never visible at `dest` even briefly.
+    verify(&part, expected_sha256)?;
     std::fs::rename(&part, dest)?;
     Ok(())
 }
@@ -351,9 +363,8 @@ fn verify(path: &Path, expected: &str) -> Result<()> {
 /// Command-line check of the downloader: fetch + unpack the AI engine into `dir`.
 pub fn download_test(dir: &Path) -> Result<()> {
     let zip = dir.join("server.zip");
-    fetch(SERVER.url, &zip, &|d, t| print!("\r{:.1} / {:.1} MB   ", d as f64 / 1e6, t as f64 / 1e6))?;
+    fetch_and_verify(SERVER.url, &zip, SERVER.sha256, &|d, t| print!("\r{:.1} / {:.1} MB   ", d as f64 / 1e6, t as f64 / 1e6))?;
     println!();
-    verify(&zip, SERVER.sha256)?;
     println!("fingerprint OK");
     unzip(&zip, &dir.join("llama"))?;
     println!("unpacked: llama-server.exe present = {}", dir.join(SERVER.file).exists());

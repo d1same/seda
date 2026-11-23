@@ -84,8 +84,8 @@ function Language({ settings, update, next }: { settings: Settings; update: Upda
   return (
     <section className="onb-panel">
       <div className="label">Setup · 2 of 6</div>
-      <h1>English, plus…?</h1>
-      <p className="lead">English is always understood. Add one more language you speak (mixing both in a sentence works too), or pick None.</p>
+      <h1>What language do you speak?</h1>
+      <p className="lead">Pick Auto-detect for any language automatically, English only, or a second language (Persian uses a fine-tuned model and mixes with English).</p>
       <div className="langs">
         {LANGUAGES.map((l) => (
           <button key={l.code} className={`lang ${settings.language === l.code ? "on" : ""}`} onClick={() => update("language", l.code)}>

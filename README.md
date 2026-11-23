@@ -28,10 +28,10 @@ Users only need the installer or APK from [Releases](https://github.com/d1same/s
 
 ### Android highlights
 
-- **100% on-device phone call & meeting notes.** Runs `whisper.cpp` + Silero VAD + `llama.cpp` (Gemma 4 E2B or E4B) directly on your phone with zero cloud upload.
-- **Granola-style call notes.** Built-in **Phone call** template, clickable task checkboxes, "My notes" merge, FTS5 search, and cited Ask across all calls.
-- **Automatic call capture & import.** Built-in Call Recording Helper for Android 10–15, automatic call-recording folder import, 1-tap **Share → Seda** for any audio file, and a background foreground-service mic recorder.
-- **Foldable-ready & self-updating.** Automatically switches to a two-pane split view on unfoldable screens (e.g., Honor Magic V5) and checks GitHub Releases for 1-tap in-app updates.
+- **100% on-device phone & VoIP call notes.** Runs ARM64-optimized `whisper.cpp` (FP16 + dotprod) + Silero VAD + `llama.cpp` (Gemma 4 E2B or E4B) directly on your phone with zero cloud upload.
+- **Structured call notes.** Built-in **Phone call** template, clickable task checkboxes, "My notes" merge, FTS5 search, Auto-detect language (99+ languages), and cited Ask across all calls.
+- **Automatic cellular & VoIP call recording.** Built-in Call Recording Helper for Android 10–15 supports cellular calls plus WhatsApp, Telegram, Google Voice, Signal, Teams, Zoom, Meet, and Discord, along with folder auto-import and 1-tap **Share → Seda**.
+- **Foldable-ready & self-updating.** Automatically adapts to foldable screens and checks GitHub Releases for 1-tap in-app updates.
 
 ## How it works
 

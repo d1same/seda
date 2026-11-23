@@ -32,7 +32,7 @@ const tokens = (line: string) =>
 const ownLines = (mine: string) => mine.split("\n").map(tokens).filter((t) => t.length > 0);
 
 /** True when a line of the notes is one the user typed (the AI keeps their lines, fixing typos
- *  only). Granola-style: your words in ink, what Seda added in gray. */
+ *  only): your words in ink, what Seda added in gray. */
 export function fromMine(line: string, mine: string[][]): boolean {
   const t = tokens(line);
   if (!t.length) return false;

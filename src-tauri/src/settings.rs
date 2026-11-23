@@ -69,7 +69,7 @@ pub struct Settings {
     pub email: String,
     /// Spoken phrase → the text that replaces it. "my email" is covered by `email`.
     pub snippets: Vec<Snippet>,
-    /// Save meeting audio as WAV files. Off: like Granola, audio is transcribed live and never stored.
+    /// Save meeting audio as WAV files. Off: audio is transcribed live and never stored.
     pub keep_meeting_audio: bool,
     /// The user's own note templates (built-ins are in templates.rs). Cleaned on every save.
     pub templates: Vec<crate::templates::Template>,

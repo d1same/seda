@@ -279,8 +279,13 @@ pub fn paste_for(text: &str, remote: bool) -> anyhow::Result<()> {
         }
         let Ok(mut cb) = arboard::Clipboard::new() else { return };
         if cb.get_text().ok().as_deref() == Some(ours.as_str()) {
-            if let Some(p) = previous {
-                let _ = set_private(&mut cb, &p); // it's already in history from when it was copied
+            match previous {
+                Some(p) => {
+                    let _ = set_private(&mut cb, &p); // it's already in history from when it was copied
+                }
+                None => {
+                    let _ = cb.clear();
+                }
             }
         }
     });
@@ -600,23 +605,30 @@ pub fn hide(hwnd: isize) {
     }
 }
 
-/// Which process is listening on 127.0.0.1:`port` (IPv4), if any. Seda only talks to its writing AI
-/// once this is the engine it started itself.
-pub fn tcp_listener_pid(port: u16) -> Option<u32> {
+/// All processes listening on loopback/wildcard:`port` (IPv4). Seda only talks to its writing AI
+/// when the sole listener on `port` is the exact child process it started.
+pub fn tcp_listener_pids(port: u16) -> Vec<u32> {
     use windows::Win32::NetworkManagement::IpHelper::{GetExtendedTcpTable, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER};
     use windows::Win32::Networking::WinSock::AF_INET;
+    let loopback = u32::from_ne_bytes([127, 0, 0, 1]);
     unsafe {
         let mut size = 0u32;
         let _ = GetExtendedTcpTable(None, &mut size, false, AF_INET.0 as u32, TCP_TABLE_OWNER_PID_LISTENER, 0);
-        let mut buf = vec![0u8; size as usize + 1024];
-        if GetExtendedTcpTable(Some(buf.as_mut_ptr() as *mut _), &mut size, false, AF_INET.0 as u32, TCP_TABLE_OWNER_PID_LISTENER, 0) != 0 {
-            return None;
+        let words = (size as usize + 1024).div_ceil(std::mem::size_of::<u32>()).max(64);
+        let mut buf = vec![0u32; words];
+        let mut buf_bytes = (buf.len() * std::mem::size_of::<u32>()) as u32;
+        if GetExtendedTcpTable(Some(buf.as_mut_ptr() as *mut _), &mut buf_bytes, false, AF_INET.0 as u32, TCP_TABLE_OWNER_PID_LISTENER, 0) != 0 {
+            return Vec::new();
         }
         let table = &*(buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
         let rows = std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize);
         rows.iter()
-            .find(|r| u16::from_be((r.dwLocalPort & 0xFFFF) as u16) == port)
+            .filter(|r| {
+                u16::from_be((r.dwLocalPort & 0xFFFF) as u16) == port
+                    && (r.dwLocalAddr == loopback || r.dwLocalAddr == 0)
+            })
             .map(|r| r.dwOwningPid)
+            .collect()
     }
 }
 

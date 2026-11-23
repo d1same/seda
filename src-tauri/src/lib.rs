@@ -122,6 +122,7 @@ pub struct Core {
     call: Mutex<CallState>,
     /// Bumps on every meeting delete; the search index is compacted once the deletes stop.
     compact_gen: AtomicU64,
+    downloading_setup: AtomicBool,
 }
 
 type CoreState<'a> = State<'a, Arc<Core>>;
@@ -715,10 +716,18 @@ impl Core {
         // Shift+Left or verify text before the caret: wait for polish and paste ONCE instead of
         // two-phase paste-then-replace (which caused double-pasting in RDP sessions).
         let in_place_safe = !remote && !console;
+        let draft_has_newline_cue = {
+            let low = draft.to_lowercase();
+            draft.contains('\n')
+                || low.contains("new line")
+                || low.contains("new paragraph")
+                || low.contains("خط بعد")
+                || low.contains("پاراگراف جدید")
+        };
         let format_paste = |body: &str| {
             // A trailing space, so the next dictation doesn't glue onto this one ("…today.Please").
             let mut out = if body.ends_with(char::is_whitespace) { body.to_string() } else { format!("{body} ") };
-            if console {
+            if console || remote || (!draft_has_newline_cue && style != llm::STYLE_EMAIL && style != llm::STYLE_TICKET) {
                 out = out.replace("\r\n", " ").replace(['\r', '\n'], " ");
             }
             out
@@ -727,10 +736,17 @@ impl Core {
             let t = Instant::now();
             let vocab = self.vocab();
             let keep: Vec<String> = self.snippet_pairs().into_iter().map(|(_, paste)| paste).filter(|p| quick.contains(p.as_str())).collect();
+            let max_clean_chars = draft.chars().count().saturating_mul(2).saturating_add(40);
             let cleaned = match self.llm.try_lock_for(Duration::from_millis(300)) {
                 Some(mut guard) => guard.as_mut().and_then(|llm| {
                     match llm.cleanup(&draft, style, &vocab, s.latin_tech_terms, &context, &keep) {
-                        Ok(clean) if !clean.is_empty() => Some(self.store.apply_fixes(&clean)),
+                        Ok(clean) if !clean.is_empty() && clean.chars().count() <= max_clean_chars => {
+                            Some(self.store.apply_fixes(&clean))
+                        }
+                        Ok(clean) if !clean.is_empty() => {
+                            log::log("cleanup rejected: output unexpectedly longer than dictation");
+                            None
+                        }
                         Ok(_) => None,
                         Err(e) => {
                             log::log(format!("cleanup skipped: {e:#}"));
@@ -934,7 +950,8 @@ fn get_settings(core: CoreState) -> Settings {
 /// backend's current settings: a stale copy in the window can never overwrite model paths that
 /// setup filled in meanwhile (that bug made both models "not downloaded" right after setup).
 #[tauri::command]
-fn update_setting(core: CoreState, key: String, value: serde_json::Value) -> Result<Settings, String> {
+fn update_setting(core: CoreState, window: tauri::WebviewWindow, key: String, value: serde_json::Value) -> Result<Settings, String> {
+    only(&window, "main")?;
     let _guard = core.settings_lock.lock();
     let mut json = serde_json::to_value(core.settings.read().clone()).map_err(|e| e.to_string())?;
     let obj = json.as_object_mut().ok_or("settings are not an object")?;
@@ -1087,18 +1104,22 @@ fn reload_models(core: CoreState) {
 }
 
 #[tauri::command]
-fn history(core: CoreState, limit: i64) -> Vec<store::HistoryItem> {
-    core.store.history(limit)
+fn history(core: CoreState, window: tauri::WebviewWindow, limit: i64) -> Result<Vec<store::HistoryItem>, String> {
+    only(&window, "main")?;
+    Ok(core.store.history(limit))
 }
 
 #[tauri::command]
-fn correct_history(core: CoreState, id: i64, text: String) -> Vec<(String, String)> {
-    core.store.correct(id, &text)
+fn correct_history(core: CoreState, window: tauri::WebviewWindow, id: i64, text: String) -> Result<Vec<(String, String)>, String> {
+    only(&window, "main")?;
+    Ok(core.store.correct(id, &text))
 }
 
 #[tauri::command]
-fn delete_history(core: CoreState, id: i64) {
+fn delete_history(core: CoreState, window: tauri::WebviewWindow, id: i64) -> Result<(), String> {
+    only(&window, "main")?;
     core.store.delete_history(id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1141,8 +1162,10 @@ fn training_stats(core: CoreState) -> store::TrainingStats {
 }
 
 #[tauri::command]
-fn open_data_folder() {
+fn open_data_folder(window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "main")?;
     let _ = std::process::Command::new("explorer").arg(settings::data_dir()).spawn();
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -1159,12 +1182,16 @@ struct TestResult {
 async fn test_file(core: State<'_, Arc<Core>>, window: tauri::WebviewWindow, path: String, style: String) -> Result<TestResult, String> {
     only(&window, "main")?;
     let path = path.trim().trim_matches('"').to_string();
-    if path.starts_with(r"\\") || path.starts_with("//") {
-        return Err("Pick a file on this PC (network paths aren't allowed)".into());
+    if !setup::is_local_drive_path(&path) {
+        return Err("Pick a local file on this PC (network paths aren't allowed)".into());
+    }
+    let canon = std::fs::canonicalize(&path).map_err(|e| format!("Couldn't open the file: {e}"))?;
+    if !matches!(canon.components().next(), Some(std::path::Component::Prefix(p)) if matches!(p.kind(), std::path::Prefix::VerbatimDisk(_) | std::path::Prefix::Disk(_))) {
+        return Err("Pick a local file on this PC (network paths aren't allowed)".into());
     }
     let core = core.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let samples = audio::load_wav(path.trim().trim_matches('"')).map_err(|e| format!("Couldn't read the file: {e}"))?;
+        let samples = audio::load_wav(&canon.to_string_lossy()).map_err(|e| format!("Couldn't read the file: {e}"))?;
         let secs = samples.len() as f64 / audio::RATE as f64;
         let (raw, text, asr_ms, llm_ms) = core.transcribe_and_clean(&samples, &style)?;
         Ok(TestResult { raw, text, asr_ms, llm_ms, secs })
@@ -1231,9 +1258,20 @@ async fn setup_info(language: String) -> SetupInfo {
 /// Download what's missing for `pack`, then point Seda at the models and (re)start them.
 /// Emits "setup-progress" {id, done, total} and finally "setup-done" {ok, error}.
 #[tauri::command]
-fn setup_download(core: CoreState, pack: String) {
+fn setup_download(core: CoreState, window: tauri::WebviewWindow, pack: String) -> Result<(), String> {
+    only(&window, "main")?;
+    if core.downloading_setup.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
     let core = core.inner().clone();
     std::thread::spawn(move || {
+        struct Reset(Arc<Core>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                self.0.downloading_setup.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset(core.clone());
         let app = core.app.clone();
         let language = core.settings.read().language.clone();
         let result = setup::download_missing(&pack, &language, &|id, done, total| {
@@ -1262,6 +1300,7 @@ fn setup_download(core: CoreState, pack: String) {
         core.load_llm();
         let _ = app.emit("setup-done", serde_json::json!({ "ok": true }));
     });
+    Ok(())
 }
 
 #[tauri::command]
@@ -1324,7 +1363,8 @@ fn mic_test_stop(core: CoreState) {
 
 /// Everything needed to debug a problem on someone else's PC, as text to paste.
 #[tauri::command]
-fn diagnostics(core: CoreState) -> String {
+fn diagnostics(core: CoreState, window: tauri::WebviewWindow) -> Result<String, String> {
+    only(&window, "main")?;
     let s = core.settings.read().clone();
     let hw = setup::hardware();
     let status = core.status.lock().clone();
@@ -1350,10 +1390,10 @@ fn diagnostics(core: CoreState) -> String {
         tail.join("\n")
     );
     // Shared with whoever helps: hide the Windows user name in paths (C:\Users\<name>\… → ~\…).
-    match dirs::home_dir() {
+    Ok(match dirs::home_dir() {
         Some(home) => report.replace(&home.display().to_string(), "~"),
         None => report,
-    }
+    })
 }
 
 // ---------- meetings ----------
@@ -1771,9 +1811,11 @@ fn meeting_update_my_notes(core: CoreState, id: i64, text: String) {
 
 /// Notes edited by hand.
 #[tauri::command]
-fn meeting_save_notes(core: CoreState, id: i64, title: String, notes: String) {
+fn meeting_save_notes(core: CoreState, window: tauri::WebviewWindow, id: i64, title: String, notes: String) -> Result<(), String> {
+    only(&window, "main")?;
     core.store.set_meeting_notes(id, title.trim(), notes.trim());
     let _ = core.app.emit("meetings-changed", ());
+    Ok(())
 }
 
 #[derive(Serialize, serde::Deserialize, Clone)]
@@ -1800,27 +1842,34 @@ struct Source {
 
 /// Ask about a meeting, or tell the AI to change its notes. Returns the updated chat.
 #[tauri::command(async)]
-fn meeting_ask(core: CoreState, id: i64, question: String) -> Result<Vec<ChatTurn>, String> {
+fn meeting_ask(core: CoreState, window: tauri::WebviewWindow, id: i64, question: String) -> Result<Vec<ChatTurn>, String> {
+    only(&window, "main")?;
+    meeting_ask_inner(core.inner(), id, question)
+}
+
+fn meeting_ask_inner(core: &Arc<Core>, id: i64, question: String) -> Result<Vec<ChatTurn>, String> {
     let m = core.store.meeting(id).ok_or("Meeting not found")?;
     let segs: Vec<meeting::Segment> = serde_json::from_str(&m.transcript).unwrap_or_default();
     let mut chat: Vec<ChatTurn> = serde_json::from_str(&m.chat).unwrap_or_default();
     let history: Vec<(String, String)> = chat.iter().map(|t| (t.role.clone(), t.text.clone())).collect();
     let context = meeting::ask_context(&m.title, &m.notes, &segs, &question);
+    let nonce = llm::random_nonce();
     let t = Instant::now();
     let reply = {
         let mut guard = core.llm.try_lock_for(Duration::from_secs(2)).ok_or(AI_BUSY)?;
         let llm = guard.as_mut().ok_or("The writing AI isn't running yet")?;
         let user = core.settings.read().user_name.clone();
-        llm.ask_meeting(&context, &history, &question, &user).map_err(|e| e.to_string())?
+        llm.ask_meeting(&context, &history, &question, &user, &nonce).map_err(|e| e.to_string())?
     };
     log::log(format!("meeting ask answered in {:.1}s", t.elapsed().as_secs_f32()));
-    // A change to the notes comes back as complete notes: save them, show only the sentence before them.
-    let (answer, new_notes) = split_notes_reply(&reply);
+    // A change to the notes comes back as complete notes inside the per-request nonce tag.
+    let (answer, new_notes) = split_notes_reply(&reply, &nonce);
     let edited = new_notes.is_some();
     if let Some(new) = new_notes {
-        let title = new.lines().find_map(|l| l.strip_prefix("# ")).unwrap_or(&m.title).trim();
+        let cleaned = llm::clean_notes_markdown(&new);
+        let title = cleaned.lines().find_map(|l| l.strip_prefix("# ")).unwrap_or(&m.title).trim();
         let title = title.strip_prefix("Meeting notes:").unwrap_or(title).trim(); // echoed from the context header
-        let body = new.lines().filter(|l| !l.starts_with("# ")).collect::<Vec<_>>().join("\n");
+        let body = cleaned.lines().filter(|l| !l.starts_with("# ")).collect::<Vec<_>>().join("\n");
         core.store.set_meeting_notes(id, title, llm::drop_empty_sections(body.trim()).trim());
     }
     let answer = if answer.is_empty() && edited { "Updated the notes.".to_string() } else { answer };
@@ -1832,21 +1881,15 @@ fn meeting_ask(core: CoreState, id: i64, question: String) -> Result<Vec<ChatTur
 }
 
 /// Splits an Ask reply into (the sentence for the chat, the new notes if the reply rewrote them).
-/// The notes should come inside <notes>…</notes>, but the small model sometimes drops the tags:
-/// then two or more "## " sections mean the reply is a full set of notes.
-fn split_notes_reply(reply: &str) -> (String, Option<String>) {
-    if let (Some(a), Some(b)) = (reply.find("<notes>"), reply.rfind("</notes>")) {
-        if b > a {
-            let said = format!("{}{}", &reply[..a], &reply[b + 8..]);
-            return (said.trim().to_string(), Some(reply[a + 7..b].trim().to_string()));
+/// Only accepts the per-request random nonce tag so untrusted transcript content cannot spoof edits.
+fn split_notes_reply(reply: &str, nonce: &str) -> (String, Option<String>) {
+    let open = format!("<notes_{nonce}>");
+    let close = format!("</notes_{nonce}>");
+    if let (Some(a), Some(b)) = (reply.find(&open), reply.rfind(&close)) {
+        if b > a + open.len() {
+            let said = format!("{}{}", &reply[..a], &reply[b + close.len()..]);
+            return (said.trim().to_string(), Some(reply[a + open.len()..b].trim().to_string()));
         }
-    }
-    let lines: Vec<&str> = reply.lines().collect();
-    if lines.iter().filter(|l| l.starts_with("## ")).count() >= 2 {
-        let first = lines.iter().position(|l| l.starts_with('#')).unwrap_or(0);
-        let said = lines[..first].join("\n").replace("```markdown", "").replace("```", "");
-        let notes = lines[first..].join("\n").replace("```", "");
-        return (said.trim().trim_end_matches(':').trim().to_string(), Some(notes.trim().to_string()));
     }
     (reply.trim().to_string(), None)
 }
@@ -1876,7 +1919,8 @@ fn meetings_ask_clear(core: CoreState) {
 /// Ask about several meetings: `ids` (the ticked or shown ones), or every finished meeting.
 /// Returns the whole thread.
 #[tauri::command(async)]
-fn meetings_ask(core: CoreState, question: String, ids: Option<Vec<i64>>) -> Result<Vec<ChatTurn>, String> {
+fn meetings_ask(core: CoreState, window: tauri::WebviewWindow, question: String, ids: Option<Vec<i64>>) -> Result<Vec<ChatTurn>, String> {
+    only(&window, "main")?;
     ask_all(core.inner(), question, ids)
 }
 
@@ -2061,17 +2105,20 @@ fn save_thread(core: &Core, mut thread: Vec<ChatTurn>) -> Vec<ChatTurn> {
 }
 
 #[tauri::command]
-fn meetings_list(core: CoreState) -> Vec<store::Meeting> {
-    core.store.meetings()
+fn meetings_list(core: CoreState, window: tauri::WebviewWindow) -> Result<Vec<store::Meeting>, String> {
+    only(&window, "main")?;
+    Ok(core.store.meetings())
 }
 
 #[tauri::command]
-fn meeting_get(core: CoreState, id: i64) -> Option<store::Meeting> {
-    core.store.meeting(id)
+fn meeting_get(core: CoreState, window: tauri::WebviewWindow, id: i64) -> Result<Option<store::Meeting>, String> {
+    only(&window, "main")?;
+    Ok(core.store.meeting(id))
 }
 
 #[tauri::command]
-fn meeting_delete(core: CoreState, id: i64) {
+fn meeting_delete(core: CoreState, window: tauri::WebviewWindow, id: i64) -> Result<(), String> {
+    only(&window, "main")?;
     if let Some(m) = core.store.meeting(id) {
         // The audio files are named after the start time.
         if let Ok(t) = chrono::DateTime::parse_from_rfc3339(&m.ts) {
@@ -2096,6 +2143,7 @@ fn meeting_delete(core: CoreState, id: i64) {
             c.store.compact_search();
         }
     });
+    Ok(())
 }
 
 #[tauri::command]
@@ -2346,8 +2394,10 @@ fn finish_onboarding(core: CoreState) {
 
 /// Open seda.log in Notepad (the folder also holds llama.log, the writing AI engine's own log).
 #[tauri::command]
-fn open_log() {
+fn open_log(window: tauri::WebviewWindow) -> Result<(), String> {
+    only(&window, "main")?;
     open_log_file();
+    Ok(())
 }
 
 fn open_log_file() {
@@ -2524,6 +2574,7 @@ fn tauri_main() {
             meeting: Mutex::new(None),
                 call: Mutex::new(CallState::default()),
                 compact_gen: AtomicU64::new(0),
+                downloading_setup: AtomicBool::new(false),
                 fix: Mutex::new(None),
                 mic_test: Mutex::new(None),
             });
@@ -2631,7 +2682,7 @@ fn tauri_main() {
                             _ => if let Some(t) = cmd.strip_prefix("paste:") {
                                 log::log(format!("test paste: {:?}", win::paste(t)));
                             } else if let Some((id, q)) = cmd.strip_prefix("ask:").and_then(|r| r.split_once(':')) {
-                                let r = meeting_ask(c.app.state(), id.parse().unwrap_or(0), q.to_string());
+                                let r = meeting_ask_inner(&c, id.parse().unwrap_or(0), q.to_string());
                                 log::log(format!("test ask: {}", r.map(|t| t.last().map(|x| format!("[edited {}] {}", x.edited, x.text)).unwrap_or_default()).unwrap_or_else(|e| e)));
                             } else if let Some(id) = cmd.strip_prefix("export:") {
                                 log::log(format!("test export: {:?}", export_meeting(&c, id.parse().unwrap_or(0))));

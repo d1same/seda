@@ -48,7 +48,7 @@ function VersionRow() {
     } catch (e) { setState(`Couldn't check: ${e}`); }
   };
   return (
-    <Row title="Version" help={state || "Seda checks for updates by itself every few hours. Updates are signed and verified before installing."}>
+    <Row title="Version" help={state || "Checks for signed updates automatically."}>
       <span className="mono">{version}</span>
       <button className="btn small" onClick={check}>Check for updates</button>
     </Row>
@@ -158,7 +158,7 @@ export default function Settings({ settings, update, status, go }: { settings: S
       <Row title="Microphone" help="Which mic Seda listens to.">
         <MicPicker settings={settings} update={update} />
       </Row>
-      <Row title="Extra language" help="English is always understood. Add one more language you speak, or None. Switching may download a different speech model.">
+      <Row title="Language" help="Auto-detect covers 99+ languages; Persian uses a dedicated Farsi + English model.">
         <select className="field" style={{ width: 240 }} value={settings.language} onChange={(e) => update("language", e.target.value)}>
           {LANGUAGES.map((l) => (
             <option key={l.code} value={l.code}>{l.native} — {l.name}</option>
@@ -168,9 +168,9 @@ export default function Settings({ settings, update, status, go }: { settings: S
       <Row
         title="Writing AI"
         help={
-          !settings.cleanup ? "Off: text is pasted exactly as heard. Fastest."
-          : settings.polish === "always" ? "Words paste as soon as you stop talking. The model then tidies that sentence in place."
-          : "Words paste as soon as you stop talking. The model tidies them only when you correct yourself, hesitate, or dictate a long email."
+          !settings.cleanup ? "Off: pastes speech as heard. Fastest."
+          : settings.polish === "always" ? "Polishes every dictation in place right after pasting."
+          : "Polishes only when you correct yourself, hesitate, or dictate a long email."
         }
       >
         <Segmented
@@ -222,7 +222,7 @@ export default function Settings({ settings, update, status, go }: { settings: S
         <div className="advanced">
           <ToggleRow
             title="Keep meeting recordings"
-            help="Off: like Granola, the audio is transcribed as you talk and never saved; only the transcript and notes stay. On: also saves the audio on this PC."
+            help="Off: audio is transcribed live and never saved. On: saves meeting audio locally."
             on={settings.keep_meeting_audio}
             onChange={(v) => update("keep_meeting_audio", v)}
           />
