@@ -24,7 +24,7 @@ Both Windows and Android share matching versions on the **[Latest Release](https
 - **Bot-free meeting notes.** Captures your mic and system audio locally, detects calls in Teams, Zoom, Meet, and more, writes structured notes with decisions and action items, and lets you search or ask questions across all meetings.
 
 ### Android
-- **100% on-device call & meeting notes.** Runs GPU-accelerated `whisper.cpp` (Vulkan GPU with ARM64 FP16+dotprod CPU fallback) + Silero VAD + `llama.cpp` directly on your phone, streaming transcript lines live as they finish with zero cloud upload.
+- **100% on-device call & meeting notes.** Runs ARM64-optimized `whisper.cpp` (FP16 + dotprod, with Fast 181 MB and Best accuracy 548 MB speech modes) + Silero VAD + on-demand `llama.cpp` directly on your phone, streaming transcript lines live as they finish with zero cloud upload.
 - **Automatic cellular & VoIP call recording.** Supports cellular calls plus WhatsApp, Telegram, Google Voice, Signal, Teams, Zoom, Google Meet, and Discord, along with call-folder auto-import and **Share → Seda** for any audio file.
 - **Structured notes & search.** Clickable task checkboxes, "My notes" merge, full-text search, Auto-detect language (99+ languages), and cited Q&A across all your calls.
 - **Adaptive layout & in-app updates.** Adapts automatically to phones and foldables, and checks GitHub Releases for 1-tap in-app updates.
