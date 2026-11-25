@@ -7,7 +7,7 @@ import type { SectionId } from "../Main";
 import { Head } from "./ui";
 import { dayOf } from "./HistoryRow";
 import { SelectBar, Tick, useSelection } from "./Select";
-import AskBar from "./AskBar";
+import AskBar, { type AskSuggestion } from "./AskBar";
 import { TemplateList, templateName, useTemplates } from "./TemplateMenu";
 import "./meetings.css";
 
@@ -21,7 +21,21 @@ const IDLE: MeetingStatus = { running: false, secs: 0, segments: [], my_notes: "
 const peopleLabel = (people?: string) => (people || "").split(" | ").map((s) => s.trim()).filter(Boolean).join(", ");
 const meetingName = (m: { title: string; cal?: string }) => m.title.trim() || m.cal?.trim() || "Writing notes…";
 const speaker = (who: string, me: string) => (who === "You" ? me || "You" : who);
-const SUGGESTIONS = ["What did I agree to do?", "Write a follow-up email", "Add more detail", "Make it shorter"];
+const SUGGESTIONS: AskSuggestion[] = [
+  {
+    label: "Short ticket note",
+    prompt: "Write a short, plain-text ticket update with simple - bullets (issue, what was done, next steps) ready to copy and paste — no Markdown bold or headings.",
+  },
+  {
+    label: "Short email",
+    prompt: "Write a short, friendly follow-up email with simple - bullets ready to copy and paste.",
+  },
+  "What did I agree to do?",
+  {
+    label: "Make notes shorter",
+    prompt: "Shorten the saved meeting notes while keeping key facts, decisions, and next steps.",
+  },
+];
 const SUGGESTIONS_ALL = ["What did I agree to do this week?", "What was decided this week?", "What is still open?"];
 type Go = (s: SectionId) => void;
 

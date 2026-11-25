@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ChatTurn, Source } from "../../lib/api";
 import Icon from "../Icons";
 
+export type AskSuggestion = string | { label: string; prompt: string };
+
 type Props = {
   initial: ChatTurn[];
   /** Sends the question; resolves to the whole thread. */
@@ -10,7 +12,7 @@ type Props = {
   placeholder: string;
   /** The input's accessible name. */
   label: string;
-  suggestions: string[];
+  suggestions: AskSuggestion[];
   /** Shown in the thread head: "Ask Seda · 3 selected". */
   scope?: string;
   /** Opens a cited meeting. Without it citations are plain numbers. */
@@ -20,6 +22,22 @@ type Props = {
   /** Open the thread on mount (coming back from a cited meeting). */
   startOpen?: boolean;
 };
+
+function CopyBtn({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  const copy = () => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setDone(true);
+      window.setTimeout(() => setDone(false), 1400);
+    }).catch(() => {});
+  };
+  return (
+    <button type="button" className="bubble-copy" onClick={copy}>
+      <Icon name={done ? "check" : "copy"} size={12} />
+      {done ? "Copied" : "Copy"}
+    </button>
+  );
+}
 
 const shortDate = (ts: string) => new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
 
@@ -108,7 +126,12 @@ export default function AskBar({ initial, ask, clear, placeholder, label, sugges
               : (
                 <div key={i} className={`bubble ${t.role}`} dir="auto">
                   {t.text}
-                  {t.edited && <span className="edited"><Icon name="check" size={12} />Notes updated</span>}
+                  {t.role === "ai" && (
+                    <div className="bubble-foot">
+                      {t.edited && <span className="edited"><Icon name="check" size={12} />Notes updated</span>}
+                      <CopyBtn text={t.text} />
+                    </div>
+                  )}
                 </div>
               )))}
             {busy && <div className="bubble ai thinking"><span /><span /><span /></div>}
@@ -116,8 +139,14 @@ export default function AskBar({ initial, ask, clear, placeholder, label, sugges
           </div>
         </div>
       )}
-      {!busy && chat.length === 0 && (
-        <div className="sugg-row">{suggestions.map((s) => <button key={s} className="sugg" onClick={() => send(s)}>{s}</button>)}</div>
+      {!busy && (!open || chat.length === 0) && (
+        <div className="sugg-row">
+          {suggestions.map((s) => {
+            const label = typeof s === "string" ? s : s.label;
+            const prompt = typeof s === "string" ? s : s.prompt;
+            return <button key={label} className="sugg" onClick={() => send(prompt)}>{label}</button>;
+          })}
+        </div>
       )}
       {err && <div className="error-text">{err}</div>}
       <form className="askbar" onSubmit={(e) => { e.preventDefault(); send(q); }}>

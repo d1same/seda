@@ -209,7 +209,15 @@
 .src .src-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .src .when { font: 11px var(--mono); color: var(--ink-3); white-space: nowrap; }
 .bubble .src-more { font-size: 12px; }
-.bubble .edited { display: flex; align-items: center; gap: 5px; margin-top: 6px; font-size: 11.5px; font-weight: 600; color: var(--accent); }
+.bubble .bubble-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; }
+.bubble .edited { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; color: var(--accent); }
+.bubble .bubble-copy {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  margin-inline-start: auto; padding: 2px 7px; border-radius: var(--r-1);
+  font-size: 11.5px; color: var(--ink-3); transition: color var(--t-fast), background var(--t-fast);
+}
+.bubble .bubble-copy:hover { color: var(--ink); background: var(--paper-3); }
+.bubble .bubble-copy:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .bubble.thinking { display: flex; gap: 4px; padding: 11px 12px; }
 .bubble.thinking span { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); animation: pulse 1s ease-in-out infinite; }
 .bubble.thinking span:nth-child(2) { animation-delay: .15s; }
